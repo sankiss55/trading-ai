@@ -145,6 +145,38 @@ trading, not evidence of profitability (sec. 45.4).
 Still open after this approval: `ai.model_id` (VERIFICAR), `ai.effort` and the cache prices of `ai.pricing` (VERIFICAR,
 not owner decisions).
 
+## Strategy v1.0.0 result and family v2 (owner decision 2026-10-02)
+
+**v1.0.0 rejected.** 5-min EMA trend, intraday, flat 15:50: official run 2022-2026 hit the 10% drawdown
+halt on 2022-03-11 (283 trades, PF 0.56, -0.28R); segmented research run lost in every walk-forward
+window and every year (5,656 trades, win rate 33%, PF 0.54, -0.34R). Diagnosis: 1R ~ 0.27% of price,
+round-trip cost ~ 0.37R, gross edge ~ 0. Web research found intraday edges on SPY/QQQ of 2-5 bps gross
+(ORB, "Beat the Market", last half hour), below costs.
+
+**Family v2: daily swing mean reversion on index ETFs.** Approved by the owner as part of the
+research plan (the values below were proposed by the coding agent and approved as a whole):
+
+| Topic | Value |
+| --- | --- |
+| Universe | SPY, QQQ, IWM (mega caps excluded: survivorship bias, index-level mechanism) |
+| Holding mode | `swing` (overnight gap risk accepted; disaster stop GTC) |
+| Timeframe / feed | primary `1Day`, SIP daily bars (decided overnight on the previous complete bar: same feed live and in backtest) |
+| Execution | signal after the close on the complete daily bar; market order at the next session open; exits the same way |
+| Protection | bracket kept (spec 23.1): disaster stop entry - 3 x ATR(14, daily); take profit 10R (exits are rule-based) |
+| Sizing | risk 1.0% per trade; max 0.33 equity per ETF; max 3 positions; total exposure <= 0.99 (cash only) |
+| Costs | 5 bps per side base; stress x2 and x3; break-even bps reported |
+| Price adjustment | `split` (dividends not credited: small conservative bias) |
+| Data split | development 2016-01..2022-12; lockbox 2023-01..2026-06 opened once per finalist with a frozen commit and a pass rule written before opening; embargo 2026-07+ = forward paper trading |
+| Trial budget | <= 12 registered configurations in total (v1.0.0 counts as 1) |
+| Acceptance (extends sec. 45.4) | pooled development walk-forward OOS: expectancy >= 0.10R and t >= 2 and bootstrap 95% CI lower bound > 0; PF >= 1.2; Monte-Carlo 95th-percentile max DD <= 15%; DSR >= 0.95 (N from the trial registry); PBO < 0.5; >= 95th percentile vs random entry; positive at 2x cost; vs buy-and-hold of the same ETFs: Sharpe >= B&H, or max DD <= 1/2 B&H with CAGR >= 60% of B&H. Lockbox pass rule: expectancy > 0, PF > 1.1, inside the development CI, max DD <= 15%. "Nothing passes" is an acceptable outcome |
+
+Pre-registered hypotheses (7 configurations + v1.0.0 = 8 of 12):
+- **MR-A (IBS)**: entry IBS < 0.2; A1 without filter, A2 with close > SMA200. Exit IBS > 0.8 or after 5 days.
+- **MR-B (Connors RSI(2))**: close > SMA200 and RSI(2) < 5 / 10 / 15 (B1-B3). Exit close > SMA5 or after 10 days.
+- **TF (baseline)**: hold while close > SMA200 (T1) or SMA210 (T2, ~10 months); exit when the close falls below it.
+
+`config.yaml` stays on strategy v1.0.0 until a v2 finalist passes the lockbox and the owner approves it.
+
 ## Change log (sec. 58.6)
 
 Every change to strategy, risk, prompts, model or universe bumps the matching version
@@ -236,4 +268,8 @@ owner decisions; the owner confirms or changes them.
 | System exit, end-of-day flatten and limit-entry timeout live in the runner instead of `application/exit_procedures.py` (AC-22 pending) | `backtest/runner.py` | Phase 5 moves them to the shared use cases and the Phase 1 backtest is re-run (sec. 55) |
 | Price-increment rule duplicated as an independent broker-side validation | `adapters/simulation/simulated_broker.py` vs `domain/risk/exits.py` | Intentional: the simulated broker mimics Alpaca rejecting invalid prices independently of the domain; both are VERIFICAR |
 | 390-minute regular session constant used only to size the warm-up history | `backtest/runner.py` | Follow-up: derive from `SessionDay` open/close |
+| Family v2 uses holding mode `swing` and a `1Day` primary timeframe (spec 5.6 recommends intraday for 5-min systems; v2 is a daily system) | research configs for v2 | Owner decision 2026-10-02 |
+| Family v2 strategy feed is SIP daily (sec. 10.2 consistency kept: the same feed live and in backtest) | research configs for v2 | Owner decision 2026-10-02 |
+| Sec. 45.4 thresholds extended with statistical gates; development/lockbox split replaces the single out-of-sample cut for v2 | research pipeline | Owner decision 2026-10-02 |
+| v2 executes at the next open with market orders (open-gap slippage risk) instead of auction orders (MOO/MOC) | daily engine path | Possible later improvement; Alpaca paper does not simulate auctions |
 | Part of Phase 2 pulled forward (owner request 2026-10-02): Alpaca historical market data + market calendar adapters, secrets loader and downloader, so the Phase 1 backtest can run on real data. No orders, no trading client usage beyond the calendar, no streaming | `adapters/alpaca/`, `app/secrets.py`, `backtest/data.py` | Rest of Phase 2 (container, SQLite, control CLI, SMTP, broker adapter) unchanged |
