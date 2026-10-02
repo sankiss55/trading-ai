@@ -1,0 +1,144 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading-agent"
+version = "0.1.0"
+description = "Autonomous trading agent: deterministic strategy, AI veto filter, hexagonal architecture (paper trading only)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "alpaca-py>=0.44,<1",  # official SDK (sec. 6.1), API verified on 0.44.0; NEVER alpaca-trade-api
+    "pydantic>=2.6,<3",
+    "pyyaml>=6.0",
+    "python-dotenv>=1.0",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+    "types-PyYAML",
+    "types-requests",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+    "app*",
+    "domain*",
+    "application*",
+    "adapters*",
+    "backtest*",
+    "shadow*",
+]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", "data", "logs", "control"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "DTZ",  # flake8-datetimez: no naive datetimes
+    "BLE",  # flake8-blind-except
+    "S110", # try/except/pass (sec. 57)
+    "TID",  # flake8-tidy-imports
+    "PT",   # flake8-pytest-style
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "domain", "application", "adapters", "backtest", "shadow", "tests"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+strict = true
+disallow_untyped_defs = true
+warn_unreachable = true
+show_error_codes = true
+exclude = ["^\\.venv/", "^data/", "^logs/"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+
+# ---------------------------------------------------------------- import-linter (sec. 8.3)
+[tool.importlinter]
+root_packages = ["domain", "application", "adapters", "app", "backtest", "shadow"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "domain depends on no other layer, infrastructure or SDK (8.3.1)"
+type = "forbidden"
+source_modules = ["domain"]
+forbidden_modules = [
+    "application",
+    "adapters",
+    "app",
+    "backtest",
+    "shadow",
+    "sqlite3",
+    "smtplib",
+    "socket",
+    "http",
+    "urllib",
+    "requests",
+    "alpaca",
+    "anthropic",
+    "subprocess",  # the Claude Code CLI process lives in adapters/ only (DECISIONS.md)
+]
+
+[[tool.importlinter.contracts]]
+name = "application uses only domain; no adapters, composition root or SDKs (8.3.2)"
+type = "forbidden"
+source_modules = ["application"]
+forbidden_modules = [
+    "adapters",
+    "app",
+    "backtest",
+    "shadow",
+    "sqlite3",
+    "smtplib",
+    "socket",
+    "http",
+    "urllib",
+    "requests",
+    "alpaca",
+    "anthropic",
+    "subprocess",  # the Claude Code CLI process lives in adapters/ only (DECISIONS.md)
+]
+
+[[tool.importlinter.contracts]]
+name = "adapters never import application or the composition root (8.3.3)"
+type = "forbidden"
+source_modules = ["adapters"]
+forbidden_modules = ["application", "app", "backtest", "shadow"]

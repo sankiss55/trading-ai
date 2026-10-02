@@ -1,0 +1,170 @@
+# Non-secret configuration (master spec v2.1, sec. 7.3). Versioned in Git.
+# Markers (sec. 0): OWNER_DECISION = only the owner may set it (null until then);
+# SUGERIDO = reasonable technical default; VERIFICAR = check against official docs.
+# Any OWNER_DECISION left null MUST prevent enabling trading (sec. 7.4).
+# Units: every *_pct of risk, strategy.no_trade_thresholds and backtest is a FRACTION
+# (0.005 = 0.5 %); *_bps are basis points. Numbers are unquoted on purpose: the loader
+# parses YAML floats as exact Decimals.
+
+config_version: "2.2.0"  # 2.2.0: owner decisions 2026-10-02 filled (docs/DECISIONS.md)
+                         # 2.1.0: ai.provider and ai.cli_* added (owner decision 2026-10-02)
+strategy_version: "1.0.0"  # 1.0.0: first owner-approved strategy (2026-10-02)
+risk_version: "1.0.0"      # 1.0.0: first owner-approved risk limits (2026-10-02)
+prompt_version: "1"
+
+system:
+  timezone_internal: "UTC"
+  timezone_market: "America/New_York"
+  db_path: "data/paper/trading.db"
+  log_dir: "logs/paper"
+  control_stop_file: "control/STOP"
+  control_poll_seconds: 5            # SUGERIDO
+  max_clock_skew_seconds: 2          # SUGERIDO
+  queue_max_size: 100                # SUGERIDO
+
+universe:
+  whitelist: ["SPY", "QQQ", "IWM", "AAPL", "MSFT", "NVDA", "AMZN", "META"]  # OWNER_DECISION 2026-10-02
+  blacklist: []
+  min_price: 10                      # OWNER_DECISION 2026-10-02
+  max_price: 2000                    # OWNER_DECISION 2026-10-02
+  min_avg_daily_volume: 5000000      # OWNER_DECISION 2026-10-02 (shares/day, computed from historical daily bars)
+  avg_volume_lookback_days: 20       # SUGERIDO
+  max_spread_bps: 20                 # OWNER_DECISION 2026-10-02 (see sec. 10.5 about IEX)
+
+market_data:
+  feed: "iex"                        # OWNER_DECISION 2026-10-02: "iex" | "sip"
+  adjustment: "split"                # OWNER_DECISION 2026-10-02: raw | split | dividend | all; backtest and live MUST use the same convention
+  max_bar_age_seconds: 90            # SUGERIDO
+  bar_close_grace_seconds: 10        # SUGERIDO
+  history_warmup_bars: 300           # SUGERIDO, must cover the longest indicator
+
+session:
+  allow_premarket: false             # FIXED in MVP
+  allow_after_hours: false           # FIXED in MVP
+  no_entry_first_minutes: 15         # OWNER_DECISION 2026-10-02
+  no_entry_last_minutes: 30          # OWNER_DECISION 2026-10-02
+
+strategy:
+  holding_mode: "intraday"           # OWNER_DECISION 2026-10-02: "intraday" | "swing"
+  flatten_minutes_before_close: 10   # OWNER_DECISION 2026-10-02 (required if intraday)
+  primary_timeframe: "5Min"          # OWNER_DECISION 2026-10-02
+  confirmation_timeframe: "15Min"    # OWNER_DECISION 2026-10-02 (null if unused)
+  signal_ttl_seconds: 120            # SUGERIDO
+  cooldown_bars: 3                   # OWNER_DECISION 2026-10-02
+  min_minutes_per_bar: 3             # OWNER_DECISION 2026-10-02 (SUGERIDO: 60% of the bar's minutes)
+  indicators:
+    ema_fast: 9                      # OWNER_DECISION 2026-10-02
+    ema_slow: 21                     # OWNER_DECISION 2026-10-02
+    rsi_period: 14                   # OWNER_DECISION 2026-10-02
+    atr_period: 14                   # OWNER_DECISION 2026-10-02
+    volume_avg_period: 20            # OWNER_DECISION 2026-10-02
+  # OWNER_DECISION 2026-10-02 (see sec. 13.4): BUY only if ALL entry rules are true.
+  entry_rules:
+    - {rule_id: ENTRY_TREND_01, timeframe: primary, left: {series: ema_fast, offset: -1}, op: ">", right: {series: ema_slow, offset: -1}}
+    - {rule_id: ENTRY_PRICE_01, timeframe: primary, left: {series: close, offset: -1}, op: ">", right: {series: ema_fast, offset: -1}}
+    - {rule_id: ENTRY_MOMENTUM_01, timeframe: primary, left: {series: rsi, offset: -1}, op: ">", right: {const: 50}}
+    - {rule_id: ENTRY_VOLUME_01, timeframe: primary, left: {series: volume, offset: -1}, op: ">", right: {series: volume_avg, offset: -1}}
+    - {rule_id: ENTRY_CONFIRM_01, timeframe: confirmation, left: {series: ema_fast_confirm, offset: -1}, op: ">", right: {series: ema_slow_confirm, offset: -1}}
+  # OWNER_DECISION 2026-10-02 (see sec. 13.5): no entry if ANY no-trade rule is true.
+  no_trade_rules:
+    - {rule_id: NOTRADE_RSI_HIGH, timeframe: primary, left: {series: rsi, offset: -1}, op: ">", right: {param: rsi_overbought}}
+    - {rule_id: NOTRADE_VOLATILITY, timeframe: primary, left: {series: atr_pct, offset: -1}, op: ">", right: {param: max_atr_pct}}
+    - {rule_id: NOTRADE_GAP, timeframe: primary, left: {series: gap_pct, offset: -1}, op: ">", right: {param: max_gap_pct}}
+  # OWNER_DECISION 2026-10-02 (required if exit_on_signal_reversal is true): close if ANY is true.
+  exit_rules:
+    - {rule_id: EXIT_REVERSAL_01, timeframe: primary, left: {series: ema_fast, offset: -1}, op: "<", right: {series: ema_slow, offset: -1}}
+  no_trade_thresholds:
+    rsi_overbought: 70               # OWNER_DECISION 2026-10-02
+    max_atr_pct: 0.01                # OWNER_DECISION 2026-10-02 (fraction: ATR / close)
+    max_gap_pct: 0.02                # OWNER_DECISION 2026-10-02 (fraction of the previous close)
+  exit:
+    stop_method: "atr"               # OWNER_DECISION (atr in MVP)
+    stop_atr_multiplier: 1.5         # OWNER_DECISION 2026-10-02
+    take_profit_r_multiple: 2.0      # OWNER_DECISION 2026-10-02
+    time_stop_bars: 12               # OWNER_DECISION 2026-10-02 (null = no time stop)
+    exit_on_signal_reversal: true    # OWNER_DECISION 2026-10-02 (true | false)
+    min_tp_distance_ticks: 2         # SUGERIDO
+
+risk:                                # fractions of equity (0.005 = 0.5 %)
+  risk_per_trade_pct: 0.005          # OWNER_DECISION 2026-10-02
+  max_daily_loss_pct: 0.02           # OWNER_DECISION 2026-10-02
+  max_weekly_loss_pct: 0.04          # OWNER_DECISION 2026-10-02
+  max_drawdown_pct: 0.10             # OWNER_DECISION 2026-10-02
+  max_positions: 3                   # OWNER_DECISION 2026-10-02
+  max_total_exposure_pct: 0.90       # OWNER_DECISION 2026-10-02
+  max_symbol_exposure_pct: 0.30      # OWNER_DECISION 2026-10-02
+  max_aggregate_open_risk_pct: 0.015 # OWNER_DECISION 2026-10-02
+  slippage_buffer_bps: 5             # OWNER_DECISION 2026-10-02
+  min_qty: 1                         # FIXED (whole shares)
+
+execution:
+  entry_order_type: "market"         # OWNER_DECISION 2026-10-02: "market" | "limit"
+  limit_entry_offset_bps: null       # required if entry_order_type = limit
+  entry_timeout_seconds: 30          # SUGERIDO (limit only)
+  max_order_rejections_per_day: 3    # SUGERIDO
+  flatten_retry_seconds: 60          # SUGERIDO
+  reconcile_interval_seconds: 60     # SUGERIDO
+
+ai:
+  provider: "claude_cli"             # OWNER_DECISION 2026-10-02: "claude_cli" | "anthropic_api".
+                                     # claude_cli = Claude Code CLI with the machine's logged-in
+                                     # Claude subscription session, no API key (docs/DECISIONS.md).
+                                     # "anthropic_api" is rejected at startup in this project.
+  cli_command: "claude"              # path or name of the Claude Code CLI executable; VERIFICAR
+  cli_max_concurrency: 1             # FIXED: subscription session, one call at a time
+  model_id: "claude-sonnet-5-5"      # VERIFICAR before deploying; with claude_cli it is passed to
+                                     # `--model` (VERIFICAR the CLI accepts the full id or an alias)
+  effort: null                       # VERIFICAR supported values; SUGERIDO: lowest with acceptable quality
+  max_output_tokens: 1024            # SUGERIDO
+  request_timeout_seconds: 30        # SUGERIDO
+  max_retries: 2                     # SUGERIDO
+  on_unavailable: "block"            # "block" | "rules_only"
+  snapshot_bars_primary: 30          # SUGERIDO
+  snapshot_bars_confirmation: 12     # SUGERIDO
+  recent_outcomes_limit: 5           # SUGERIDO
+  max_rationale_chars: 500           # SUGERIDO
+  benchmark_symbol: "SPY"            # SUGERIDO
+  include_news: false                # OWNER_DECISION 2026-10-02
+  max_headlines: 5                   # SUGERIDO (only if include_news)
+  max_calls_per_day: 50              # OWNER_DECISION 2026-10-02
+  max_cost_usd_per_day: 5            # OWNER_DECISION 2026-10-02
+  max_cost_usd_per_month: 100        # OWNER_DECISION 2026-10-02
+  # With claude_cli the cost comes from the CLI envelope's reported cost if present;
+  # otherwise these prices give an estimate. Budgets (max_calls_per_day, max_cost_usd_*)
+  # are enforced either way (sec. 34.3).
+  pricing:                           # VERIFICAR; used only to estimate cost
+    input_per_mtok_usd: 2.00
+    output_per_mtok_usd: 10.00
+    cache_write_per_mtok_usd: null   # VERIFICAR
+    cache_read_per_mtok_usd: null    # VERIFICAR
+
+notifications:
+  policy: "critical_plus_daily"      # OWNER_DECISION 2026-10-02: "every_trade" | "critical_plus_daily" | "daily_only"
+  daily_summary_time_et: "16:30"     # SUGERIDO
+  error_digest_minutes: 30           # SUGERIDO
+
+retention:
+  market_bars_days: 365              # OWNER_DECISION 2026-10-02
+  ai_snapshots_days: 365             # OWNER_DECISION 2026-10-02
+  logs_days: 90                      # OWNER_DECISION 2026-10-02
+
+backtest:
+  start_date: 2022-01-01             # OWNER_DECISION 2026-10-02
+  end_date: 2026-06-30               # OWNER_DECISION 2026-10-02
+  out_of_sample_start: 2025-07-01    # OWNER_DECISION 2026-10-02
+  walk_forward_train_months: 12      # OWNER_DECISION 2026-10-02
+  walk_forward_test_months: 3        # OWNER_DECISION 2026-10-02
+  min_expectancy_r: 0.10             # OWNER_DECISION 2026-10-02 (sec. 45.4)
+  min_profit_factor: 1.2             # OWNER_DECISION 2026-10-02
+  max_drawdown_pct: 0.15             # OWNER_DECISION 2026-10-02 (fraction)
+  min_trades_out_of_sample: 100      # OWNER_DECISION 2026-10-02
+
+paper:
+  min_paper_trading_days: 30         # OWNER_DECISION 2026-10-02
+  min_shadow_signals: 100            # OWNER_DECISION 2026-10-02 (sec. 46.4)
+  min_expectancy_improvement_r: 0.05 # OWNER_DECISION 2026-10-02 (sec. 46.4)
+  min_valid_ai_response_rate: 0.95   # OWNER_DECISION 2026-10-02 (sec. 46.4, fraction)
+
+backups:
+  frequency: "daily_after_close"     # OWNER_DECISION 2026-10-02 (free text; once per day after the close)
+  retention_days: 30                 # OWNER_DECISION 2026-10-02

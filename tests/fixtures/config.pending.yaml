@@ -1,0 +1,159 @@
+# TEST FIXTURE ONLY: the repository config.yaml as it was at config_version 2.1.0,
+# before the owner decisions of 2026-10-02, with every OWNER_DECISION still null.
+# It keeps the "pending decisions refuse to trade / to backtest" tests (sec. 7.4,
+# AC-20) independent of the real config.yaml. Do not fill these nulls.
+#
+# Non-secret configuration (master spec v2.1, sec. 7.3). Versioned in Git.
+# Markers (sec. 0): OWNER_DECISION = only the owner may set it (null until then);
+# SUGERIDO = reasonable technical default; VERIFICAR = check against official docs.
+# Any OWNER_DECISION left null MUST prevent enabling trading (sec. 7.4).
+
+config_version: "2.1.0-pending-fixture"
+strategy_version: "0.1.0"
+risk_version: "0.1.0"
+prompt_version: "1"
+
+system:
+  timezone_internal: "UTC"
+  timezone_market: "America/New_York"
+  db_path: "data/paper/trading.db"
+  log_dir: "logs/paper"
+  control_stop_file: "control/STOP"
+  control_poll_seconds: 5            # SUGERIDO
+  max_clock_skew_seconds: 2          # SUGERIDO
+  queue_max_size: 100                # SUGERIDO
+
+universe:
+  whitelist: null                    # OWNER_DECISION, e.g. ["SPY", "QQQ", "AAPL"]
+  blacklist: []
+  min_price: null                    # OWNER_DECISION
+  max_price: null                    # OWNER_DECISION
+  min_avg_daily_volume: null         # OWNER_DECISION (shares/day, computed from historical daily bars)
+  avg_volume_lookback_days: 20       # SUGERIDO
+  max_spread_bps: null               # OWNER_DECISION (see sec. 10.5 about IEX)
+
+market_data:
+  feed: null                         # OWNER_DECISION: "iex" | "sip"
+  adjustment: null                   # OWNER_DECISION: raw | split | dividend | all; backtest and live MUST use the same convention
+  max_bar_age_seconds: 90            # SUGERIDO
+  bar_close_grace_seconds: 10        # SUGERIDO
+  history_warmup_bars: 300           # SUGERIDO, must cover the longest indicator
+
+session:
+  allow_premarket: false             # FIXED in MVP
+  allow_after_hours: false           # FIXED in MVP
+  no_entry_first_minutes: null       # OWNER_DECISION
+  no_entry_last_minutes: null        # OWNER_DECISION
+
+strategy:
+  holding_mode: null                 # OWNER_DECISION: "intraday" | "swing"
+  flatten_minutes_before_close: null # OWNER_DECISION (required if intraday)
+  primary_timeframe: null            # OWNER_DECISION, e.g. "5Min"
+  confirmation_timeframe: null       # OWNER_DECISION, e.g. "15Min" or null if unused
+  signal_ttl_seconds: 120            # SUGERIDO
+  cooldown_bars: null                # OWNER_DECISION
+  min_minutes_per_bar: null          # OWNER_DECISION (SUGERIDO: 60% of the bar's minutes)
+  indicators:
+    ema_fast: null                   # OWNER_DECISION
+    ema_slow: null                   # OWNER_DECISION
+    rsi_period: null                 # OWNER_DECISION
+    atr_period: null                 # OWNER_DECISION
+    volume_avg_period: null          # OWNER_DECISION
+  entry_rules: null                  # OWNER_DECISION (see sec. 13.4)
+  no_trade_rules: null               # OWNER_DECISION (see sec. 13.5)
+  exit_rules: null  # OWNER_DECISION (required if exit_on_signal_reversal is true)
+  no_trade_thresholds:
+    rsi_overbought: null             # OWNER_DECISION
+    max_atr_pct: null                # OWNER_DECISION
+    max_gap_pct: null                # OWNER_DECISION
+  exit:
+    stop_method: "atr"               # OWNER_DECISION (atr in MVP)
+    stop_atr_multiplier: null        # OWNER_DECISION
+    take_profit_r_multiple: null     # OWNER_DECISION
+    time_stop_bars: null             # OWNER_DECISION (null = no time stop)
+    exit_on_signal_reversal: null    # OWNER_DECISION (true | false)
+    min_tp_distance_ticks: 2         # SUGERIDO
+
+risk:
+  risk_per_trade_pct: null           # OWNER_DECISION
+  max_daily_loss_pct: null           # OWNER_DECISION
+  max_weekly_loss_pct: null          # OWNER_DECISION
+  max_drawdown_pct: null             # OWNER_DECISION
+  max_positions: null                # OWNER_DECISION
+  max_total_exposure_pct: null       # OWNER_DECISION
+  max_symbol_exposure_pct: null      # OWNER_DECISION
+  max_aggregate_open_risk_pct: null  # OWNER_DECISION
+  slippage_buffer_bps: null          # OWNER_DECISION
+  min_qty: 1                         # FIXED (whole shares)
+
+execution:
+  entry_order_type: "market"         # OWNER_DECISION: "market" | "limit"
+  limit_entry_offset_bps: null       # required if entry_order_type = limit
+  entry_timeout_seconds: 30          # SUGERIDO (limit only)
+  max_order_rejections_per_day: 3    # SUGERIDO
+  flatten_retry_seconds: 60          # SUGERIDO
+  reconcile_interval_seconds: 60     # SUGERIDO
+
+ai:
+  provider: "claude_cli"             # OWNER_DECISION 2026-10-02: "claude_cli" | "anthropic_api".
+                                     # claude_cli = Claude Code CLI with the machine's logged-in
+                                     # Claude subscription session, no API key (docs/DECISIONS.md).
+                                     # "anthropic_api" is rejected at startup in this project.
+  cli_command: "claude"              # path or name of the Claude Code CLI executable; VERIFICAR
+  cli_max_concurrency: 1             # FIXED: subscription session, one call at a time
+  model_id: "claude-sonnet-5-5"      # VERIFICAR before deploying; with claude_cli it is passed to
+                                     # `--model` (VERIFICAR the CLI accepts the full id or an alias)
+  effort: null                       # VERIFICAR supported values; SUGERIDO: lowest with acceptable quality
+  max_output_tokens: 1024            # SUGERIDO
+  request_timeout_seconds: 30        # SUGERIDO
+  max_retries: 2                     # SUGERIDO
+  on_unavailable: "block"            # "block" | "rules_only"
+  snapshot_bars_primary: 30          # SUGERIDO
+  snapshot_bars_confirmation: 12     # SUGERIDO
+  recent_outcomes_limit: 5           # SUGERIDO
+  max_rationale_chars: 500           # SUGERIDO
+  benchmark_symbol: "SPY"            # SUGERIDO
+  include_news: false                # OWNER_DECISION
+  max_headlines: 5                   # SUGERIDO (only if include_news)
+  max_calls_per_day: null            # OWNER_DECISION
+  max_cost_usd_per_day: null         # OWNER_DECISION
+  max_cost_usd_per_month: null       # OWNER_DECISION
+  # With claude_cli the cost comes from the CLI envelope's reported cost if present;
+  # otherwise these prices give an estimate. Budgets (max_calls_per_day, max_cost_usd_*)
+  # are enforced either way (sec. 34.3).
+  pricing:                           # VERIFICAR; used only to estimate cost
+    input_per_mtok_usd: 2.00
+    output_per_mtok_usd: 10.00
+    cache_write_per_mtok_usd: null   # VERIFICAR
+    cache_read_per_mtok_usd: null    # VERIFICAR
+
+notifications:
+  policy: "critical_plus_daily"      # OWNER_DECISION: "every_trade" | "critical_plus_daily" | "daily_only"
+  daily_summary_time_et: "16:30"     # SUGERIDO
+  error_digest_minutes: 30           # SUGERIDO
+
+retention:
+  market_bars_days: null             # OWNER_DECISION
+  ai_snapshots_days: null            # OWNER_DECISION
+  logs_days: null                    # OWNER_DECISION
+
+backtest:
+  start_date: null                   # OWNER_DECISION
+  end_date: null                     # OWNER_DECISION
+  out_of_sample_start: null          # OWNER_DECISION
+  walk_forward_train_months: null    # OWNER_DECISION
+  walk_forward_test_months: null     # OWNER_DECISION
+  min_expectancy_r: null             # OWNER_DECISION (sec. 45.4)
+  min_profit_factor: null            # OWNER_DECISION
+  max_drawdown_pct: null             # OWNER_DECISION
+  min_trades_out_of_sample: null     # OWNER_DECISION
+
+paper:
+  min_paper_trading_days: null       # OWNER_DECISION
+  min_shadow_signals: null           # OWNER_DECISION (sec. 46.4)
+  min_expectancy_improvement_r: null # OWNER_DECISION (sec. 46.4)
+  min_valid_ai_response_rate: null   # OWNER_DECISION (sec. 46.4)
+
+backups:
+  frequency: null                    # OWNER_DECISION (SUGERIDO: daily after the close)
+  retention_days: null               # OWNER_DECISION

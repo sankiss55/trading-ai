@@ -1,0 +1,158 @@
+# TEST FIXTURE ONLY — not owner decisions, not trading advice.
+# Every value marked OWNER_DECISION in config.yaml is filled here with an explicit
+# fixture value chosen only to exercise the backtest on SYNTHETIC data
+# (backtest/data.py generator). None of them may be copied into config.yaml.
+# Rules follow the conceptual examples of sec. 13.4 / 13.5. Numbers are unquoted on
+# purpose: the config loader parses YAML floats as Decimal.
+
+config_version: "2.0.0-fixture"
+strategy_version: "fixture-0.1.0"
+risk_version: "fixture-0.1.0"
+prompt_version: "1"
+
+system:
+  timezone_internal: "UTC"
+  timezone_market: "America/New_York"
+  db_path: "data/test/trading.db"
+  log_dir: "logs/test"
+  control_stop_file: "control/STOP"
+  control_poll_seconds: 5
+  max_clock_skew_seconds: 2
+  queue_max_size: 100
+
+universe:
+  whitelist: ["SYNTH"]
+  blacklist: []
+  min_price: 1
+  max_price: 10000
+  min_avg_daily_volume: 1000
+  avg_volume_lookback_days: 20
+  max_spread_bps: 50
+
+market_data:
+  feed: "iex"
+  adjustment: "split"
+  max_bar_age_seconds: 90
+  bar_close_grace_seconds: 10
+  history_warmup_bars: 100        # > one session of 5Min bars so gap_pct always resolves
+
+session:
+  allow_premarket: false
+  allow_after_hours: false
+  no_entry_first_minutes: 15
+  no_entry_last_minutes: 30
+
+strategy:
+  holding_mode: "intraday"
+  flatten_minutes_before_close: 10
+  primary_timeframe: "5Min"
+  confirmation_timeframe: "15Min"
+  signal_ttl_seconds: 120
+  cooldown_bars: 3
+  min_minutes_per_bar: 3
+  indicators:
+    ema_fast: 9
+    ema_slow: 21
+    rsi_period: 14
+    atr_period: 14
+    volume_avg_period: 20
+  entry_rules:
+    - {rule_id: ENTRY_TREND_01, timeframe: primary, left: {series: ema_fast}, op: ">", right: {series: ema_slow}}
+    - {rule_id: ENTRY_PRICE_01, timeframe: primary, left: {series: close}, op: ">", right: {series: ema_fast}}
+    - {rule_id: ENTRY_MOMENTUM_01, timeframe: primary, left: {series: rsi}, op: ">", right: {const: 50}}
+    - {rule_id: ENTRY_VOLUME_01, timeframe: primary, left: {series: volume}, op: ">", right: {series: volume_avg}}
+    - {rule_id: ENTRY_CONFIRM_01, timeframe: confirmation, left: {series: ema_fast_confirm}, op: ">", right: {series: ema_slow_confirm}}
+  no_trade_rules:
+    - {rule_id: NOTRADE_RSI_HIGH, timeframe: primary, left: {series: rsi}, op: ">", right: {param: rsi_overbought}}
+    - {rule_id: NOTRADE_VOLATILITY, timeframe: primary, left: {series: atr_pct}, op: ">", right: {param: max_atr_pct}}
+    - {rule_id: NOTRADE_GAP, timeframe: primary, left: {series: gap_pct}, op: ">", right: {param: max_gap_pct}}
+  exit_rules:
+    - {rule_id: EXIT_REVERSAL_01, timeframe: primary, left: {series: ema_fast}, op: "<", right: {series: ema_slow}}
+  no_trade_thresholds:
+    rsi_overbought: 80
+    max_atr_pct: 0.02
+    max_gap_pct: 0.03
+  exit:
+    stop_method: "atr"
+    stop_atr_multiplier: 1.5
+    take_profit_r_multiple: 2.0
+    time_stop_bars: 24
+    exit_on_signal_reversal: true
+    min_tp_distance_ticks: 2
+
+risk:
+  risk_per_trade_pct: 0.01
+  max_daily_loss_pct: 0.03
+  max_weekly_loss_pct: 0.06
+  max_drawdown_pct: 0.20
+  max_positions: 2
+  max_total_exposure_pct: 1.0
+  max_symbol_exposure_pct: 0.5
+  max_aggregate_open_risk_pct: 0.04
+  slippage_buffer_bps: 5
+  min_qty: 1
+
+execution:
+  entry_order_type: "market"
+  limit_entry_offset_bps: null
+  entry_timeout_seconds: 30
+  max_order_rejections_per_day: 3
+  flatten_retry_seconds: 60
+  reconcile_interval_seconds: 60
+
+ai:
+  provider: "claude_cli"
+  cli_command: "claude"
+  cli_max_concurrency: 1
+  model_id: "fixture-model"
+  effort: null
+  max_output_tokens: 1024
+  request_timeout_seconds: 30
+  max_retries: 2
+  on_unavailable: "block"
+  snapshot_bars_primary: 30
+  snapshot_bars_confirmation: 12
+  recent_outcomes_limit: 5
+  max_rationale_chars: 500
+  benchmark_symbol: "SYNTH"
+  include_news: false
+  max_headlines: 5
+  max_calls_per_day: 0
+  max_cost_usd_per_day: 0
+  max_cost_usd_per_month: 0
+  pricing:
+    input_per_mtok_usd: 2.00
+    output_per_mtok_usd: 10.00
+    cache_write_per_mtok_usd: null
+    cache_read_per_mtok_usd: null
+
+notifications:
+  policy: "daily_only"
+  daily_summary_time_et: "16:30"
+  error_digest_minutes: 30
+
+retention:
+  market_bars_days: 30
+  ai_snapshots_days: 30
+  logs_days: 30
+
+backtest:
+  start_date: 2025-01-02
+  end_date: 2025-03-31
+  out_of_sample_start: 2025-03-01
+  walk_forward_train_months: 1
+  walk_forward_test_months: 1
+  min_expectancy_r: 0.1
+  min_profit_factor: 1.2
+  max_drawdown_pct: 0.20
+  min_trades_out_of_sample: 5
+
+paper:
+  min_paper_trading_days: 20
+  min_shadow_signals: 30
+  min_expectancy_improvement_r: 0.05
+  min_valid_ai_response_rate: 0.95
+
+backups:
+  frequency: "daily"
+  retention_days: 30
