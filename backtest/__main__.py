@@ -65,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     print(render_text(report))
     if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
         print(f"\nJSON report written to {args.out}")
     return 0
