@@ -1,6 +1,9 @@
 """CLI: ``python -m backtest --config <yaml> --data <dir> --starting-cash <amount> [--out f]``.
 
-Prints the text summary; ``--out`` also writes the full JSON report. Exit codes:
+Prints the text summary; ``--out`` also writes the full JSON report. ``--workers N``
+runs the base and slippage-sensitivity simulations in up to N processes (default: one
+per scenario, at most the CPU count; ``1`` = sequential); the report is identical for
+any N. Exit codes:
 ``0`` report produced, ``2`` refused (pending OWNER_DECISIONs) or invalid input.
 The starting capital is not part of config.yaml (sec. 7.3), so it must be passed
 explicitly; there is no default.
@@ -16,7 +19,7 @@ from pathlib import Path
 
 from app.config import ConfigError, load_config
 from backtest.report import render_text
-from backtest.runner import BacktestRefusedError, run_backtest
+from backtest.runner import BacktestRefusedError, default_workers, run_backtest
 from domain.errors import NonRetryableError
 
 
@@ -27,6 +30,16 @@ def _decimal(text: str) -> Decimal:
         raise argparse.ArgumentTypeError(f"invalid decimal {text!r}") from exc
     if not value.is_finite() or value < 0:
         raise argparse.ArgumentTypeError(f"expected a finite non-negative amount, got {text!r}")
+    return value
+
+
+def _workers(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid worker count {text!r}") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"expected at least 1 worker, got {text!r}")
     return value
 
 
@@ -48,6 +61,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="flat commission per fill (default 0; VERIFICAR broker fees)",
     )
     parser.add_argument("--out", type=Path, default=None, help="write the JSON report here")
+    parser.add_argument(
+        "--workers",
+        type=_workers,
+        default=default_workers(),
+        help="processes for the base and sensitivity simulations "
+        "(default: %(default)s; 1 = sequential; the report does not depend on it)",
+    )
     args = parser.parse_args(argv)
     try:
         loaded = load_config(args.config)
@@ -56,6 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.data,
             starting_cash=args.starting_cash,
             commission_per_fill=args.commission_per_fill,
+            workers=args.workers,
         )
     except BacktestRefusedError as exc:
         print(str(exc), file=sys.stderr)

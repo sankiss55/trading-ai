@@ -34,15 +34,20 @@ strategy refuses to start when a rule needs such a series (OWNER_DECISION pendin
 
 from __future__ import annotations
 
+import itertools
+import operator
+from bisect import bisect_left
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from functools import partial
 from types import MappingProxyType
 
 from pydantic import Field
 
 from domain.market.indicators import (
+    IndicatorInputs,
     IndicatorSeries,
     atr,
     atr_min_bars,
@@ -54,6 +59,7 @@ from domain.market.indicators import (
     ema_min_bars,
     rsi,
     rsi_min_bars,
+    shared_run,
     volume_average,
     volume_average_min_bars,
 )
@@ -69,6 +75,7 @@ from domain.strategy.rules import (
 __all__ = [
     "SERIES_PERIOD_PARAM",
     "FeatureFrame",
+    "FeatureFrameMemo",
     "IndicatorContext",
     "IndicatorParams",
     "build_feature_frame",
@@ -151,11 +158,31 @@ class FeatureFrame:
         return values[offset]
 
 
-def _validate_bars(bars: Sequence[Bar], timeframe: Timeframe) -> None:
-    symbols = {bar.symbol for bar in bars}
+_START = operator.attrgetter("bar_start_utc")
+_END = operator.attrgetter("bar_end_utc")
+_STATUS = operator.attrgetter("status")
+_SYMBOL = operator.attrgetter("symbol")
+_TIMEFRAME = operator.attrgetter("timeframe")
+
+
+def _validate_bars(bars: Sequence[Bar], timeframe: Timeframe, *, valid_prefix: int = 0) -> None:
+    """Raise on mixed symbols, another timeframe or non-increasing starts.
+
+    ``valid_prefix``: ``bars[:valid_prefix]`` are known to pass (the same objects were
+    validated together for this timeframe), so only the rest and its boundary are
+    checked; any problem is then reported by the full check, exactly as without it.
+    """
+    if valid_prefix and _valid_tail(bars, timeframe, valid_prefix):
+        return
+    symbols = set(map(_SYMBOL, bars))
     if len(symbols) > 1:
         raise StrategyInputError(f"bars of several symbols in one frame: {sorted(symbols)}")
-    for index, bar in enumerate(bars):
+    starts = list(map(_START, bars))
+    if all(map(operator.is_, map(_TIMEFRAME, bars), itertools.repeat(timeframe))) and all(
+        map(operator.lt, starts, starts[1:])
+    ):
+        return
+    for index, bar in enumerate(bars):  # report the first problem, in index order
         if bar.timeframe is not timeframe:
             raise StrategyInputError(
                 f"bars[{index}] has timeframe {bar.timeframe}, expected {timeframe}"
@@ -164,6 +191,17 @@ def _validate_bars(bars: Sequence[Bar], timeframe: Timeframe) -> None:
             raise StrategyInputError(
                 f"bars must be strictly increasing by bar_start_utc (index {index})"
             )
+
+
+def _valid_tail(bars: Sequence[Bar], timeframe: Timeframe, valid_prefix: int) -> bool:
+    tail = bars[valid_prefix - 1 :]  # includes the last valid bar: checks the boundary
+    symbol = bars[0].symbol
+    starts = list(map(_START, tail))
+    return (
+        all(map(operator.eq, map(_SYMBOL, tail), itertools.repeat(symbol)))
+        and all(map(operator.is_, map(_TIMEFRAME, tail), itertools.repeat(timeframe)))
+        and all(map(operator.lt, starts, starts[1:]))
+    )
 
 
 def _session_index(start: datetime, sessions: Sequence[SessionDay]) -> int | None:
@@ -175,6 +213,8 @@ def _session_index(start: datetime, sessions: Sequence[SessionDay]) -> int | Non
 
 def _gap_series(priced: Sequence[Bar], sessions: Sequence[SessionDay]) -> tuple[RuleValue, ...]:
     ordered = sorted(sessions, key=lambda s: s.open_utc)
+    if all(a.close_utc <= b.open_utc for a, b in itertools.pairwise(ordered)):
+        return _disjoint_gap_series(priced, ordered)
     session_of = [_session_index(bar.bar_start_utc, ordered) for bar in priced]
     first_open: dict[int, Decimal] = {}
     last_close: dict[int, Decimal] = {}
@@ -183,17 +223,63 @@ def _gap_series(priced: Sequence[Bar], sessions: Sequence[SessionDay]) -> tuple[
             continue
         first_open.setdefault(index, bar.open)
         last_close[index] = bar.close
-    out: list[RuleValue] = []
-    for index in session_of:
-        if index is None or index == 0 or index not in first_open:
-            out.append(None)
-            continue
-        previous_close = last_close.get(index - 1)
-        if previous_close is None:
-            out.append(None)
-            continue
-        out.append(abs(first_open[index] - previous_close) / previous_close)
+    # The gap is a per-session constant: computed once per session index.
+    gap_of: dict[int, RuleValue] = {}
+    for index, open_today in first_open.items():
+        previous_close = last_close.get(index - 1) if index != 0 else None
+        if previous_close is not None:
+            gap_of[index] = abs(open_today - previous_close) / previous_close
+    return tuple(None if index is None else gap_of.get(index) for index in session_of)
+
+
+def _priced_value(bars: Sequence[Bar], *, last: bool) -> tuple[Decimal, Decimal] | None:
+    """``(open, close)`` of the first (or last) bar carrying both, else ``None``."""
+    for bar in reversed(bars) if last else bars:
+        if bar.open is not None and bar.close is not None:
+            return bar.open, bar.close
+    return None
+
+
+def _disjoint_gap_series(
+    priced: Sequence[Bar], ordered: Sequence[SessionDay]
+) -> tuple[RuleValue, ...]:
+    """:func:`_gap_series` for disjoint sessions sorted by open (the calendar case).
+
+    Bars are strictly increasing, so the bars of each session are the contiguous run
+    ``open <= start < close`` (found by bisection): the same unique session as the
+    per-bar scan, and the same first open / last close per session.
+    """
+    starts = list(map(_START, priced))
+    out: list[RuleValue] = [None] * len(priced)
+    runs = [(bisect_left(starts, s.open_utc), bisect_left(starts, s.close_utc)) for s in ordered]
+    previous_close: Decimal | None = None
+    for index, (first, last) in enumerate(runs):
+        run = priced[first:last]
+        opening = _priced_value(run, last=False)
+        closing = _priced_value(run, last=True)
+        if opening is not None and index != 0 and previous_close is not None:
+            gap = abs(opening[0] - previous_close) / previous_close
+            out[first:last] = [gap] * (last - first)
+        previous_close = None if closing is None else closing[1]
     return tuple(out)
+
+
+def _ratio_series(values: Sequence[RuleValue], divisors: Sequence[float]) -> tuple[RuleValue, ...]:
+    """``value / divisor`` where ``value`` is a float, else ``None`` (aligned).
+
+    Indicator series are a run of ``None`` followed by floats: that suffix is divided
+    in one pass; any other shape takes the element-by-element definition.
+    """
+    if len(values) != len(divisors):
+        raise ValueError("values and divisors must have the same length")
+    lead = next((i for i, value in enumerate(values) if value is not None), len(values))
+    tail = values[lead:]
+    if all(map(isinstance, tail, itertools.repeat(float))):
+        return (None,) * lead + tuple(map(operator.truediv, tail, divisors[lead:]))
+    return tuple(
+        value / divisor if isinstance(value, float) else None
+        for value, divisor in zip(values, divisors, strict=True)
+    )
 
 
 def build_feature_frame(
@@ -214,47 +300,153 @@ def build_feature_frame(
     Raises:
         StrategyInputError: mixed symbols/timeframes or unordered/duplicate bars.
     """
-    _validate_bars(bars, timeframe)
-    priced = tuple(bar for bar in bars if bar.status is not BarStatus.EMPTY)
+    return _build_feature_frame(bars, timeframe, periods, sessions, previous=None)[0]
+
+
+def _build_feature_frame(
+    bars: Sequence[Bar],
+    timeframe: Timeframe,
+    periods: IndicatorParams,
+    sessions: Sequence[SessionDay],
+    *,
+    previous: IndicatorInputs | None,
+    valid_prefix: int = 0,
+) -> tuple[FeatureFrame, IndicatorInputs | None]:
+    """:func:`build_feature_frame`, reusing the indicator inputs of ``previous``.
+
+    Indicators come from :class:`IndicatorInputs` (same cores as the batch functions);
+    when the bars cannot be used as finite floats the batch functions are called on the
+    raw values instead, so such input is reported exactly as they document.
+    """
+    _validate_bars(bars, timeframe, valid_prefix=valid_prefix)
+    priced = (
+        tuple(bar for bar in bars if bar.status is not BarStatus.EMPTY)
+        if BarStatus.EMPTY in map(_STATUS, bars)
+        else tuple(bars)
+    )
     size = len(priced)
-    closes = bar_closes(priced)
-    highs = bar_highs(priced)
-    lows = bar_lows(priced)
-    volumes = bar_volumes(priced)
+    inputs = IndicatorInputs.from_bars(priced, previous)
+    opens: tuple[RuleValue, ...]
+    close_floats: Sequence[float] | None
+    atr_of: Callable[[int], IndicatorSeries]
+    ema_of: Callable[[int], IndicatorSeries]
+    rsi_of: Callable[[int], IndicatorSeries]
+    volume_avg_of: Callable[[int], IndicatorSeries]
+    if inputs is None:
+        closes = bar_closes(priced)
+        highs = bar_highs(priced)
+        lows = bar_lows(priced)
+        volumes = bar_volumes(priced)
+        opens = tuple(bar.open for bar in priced)
+        close_floats = None
+        atr_of = partial(atr, highs, lows, closes)
+        ema_of, rsi_of = partial(ema, closes), partial(rsi, closes)
+        volume_avg_of = partial(volume_average, volumes)
+    else:
+        closes, highs, lows, volumes = inputs.closes, inputs.highs, inputs.lows, inputs.volumes
+        opens = inputs.opens
+        close_floats = inputs.close_floats
+        atr_of, ema_of, rsi_of = inputs.atr, inputs.ema, inputs.rsi
+        volume_avg_of = inputs.volume_average
 
     def maybe(
         period: int | None, compute: Callable[[int], IndicatorSeries]
     ) -> tuple[RuleValue, ...]:
         return (None,) * size if period is None else compute(period)
 
-    atr_values = maybe(periods.atr_period, lambda p: atr(highs, lows, closes, p))
-    atr_pct: list[RuleValue] = []
-    for value, close in zip(atr_values, closes, strict=True):
-        atr_pct.append(value / float(close) if isinstance(value, float) else None)
+    atr_values = maybe(periods.atr_period, atr_of)
+    divisors = close_floats if close_floats is not None else [float(c) for c in closes]
+    atr_pct = _ratio_series(atr_values, divisors)
 
     series: dict[str, tuple[RuleValue, ...]] = {
-        "open": tuple(bar.open for bar in priced),
+        "open": opens,
         "high": highs,
         "low": lows,
         "close": closes,
         "volume": volumes,
-        "ema_fast": maybe(periods.ema_fast, lambda p: ema(closes, p)),
-        "ema_slow": maybe(periods.ema_slow, lambda p: ema(closes, p)),
-        "rsi": maybe(periods.rsi_period, lambda p: rsi(closes, p)),
+        "ema_fast": maybe(periods.ema_fast, ema_of),
+        "ema_slow": maybe(periods.ema_slow, ema_of),
+        "rsi": maybe(periods.rsi_period, rsi_of),
         "atr": atr_values,
-        "volume_avg": maybe(periods.volume_avg_period, lambda p: volume_average(volumes, p)),
-        "atr_pct": tuple(atr_pct),
+        "volume_avg": maybe(periods.volume_avg_period, volume_avg_of),
+        "atr_pct": atr_pct,
         "gap_pct": _gap_series(priced, sessions) if sessions else (None,) * size,
     }
     if set(series) != set(SERIES_BASE_NAMES):  # internal invariant, keeps the two in sync
         raise StrategyConfigError(f"feature series out of sync: {sorted(series)}")
     symbol = bars[0].symbol if bars else ""
-    return FeatureFrame(
+    frame = FeatureFrame(
         symbol=symbol,
         timeframe=timeframe,
         bars=priced,
         series=MappingProxyType(series),
     )
+    return frame, inputs
+
+
+def _same_objects(left: Sequence[object], right: Sequence[object]) -> bool:
+    return len(left) == len(right) and all(map(operator.is_, left, right))
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoEntry:
+    bars: tuple[Bar, ...]
+    sessions: tuple[SessionDay, ...]
+    periods: IndicatorParams
+    frame: FeatureFrame
+    inputs: IndicatorInputs | None
+
+
+class FeatureFrameMemo:
+    """Incremental :func:`build_feature_frame` for a sliding window of one symbol.
+
+    :func:`build_feature_frame` is a pure function of its immutable arguments, so:
+
+    * a call that receives the same bar and session *objects* (identity, in the same
+      order) and the same ``periods`` object as the previous call for that
+      ``(symbol, timeframe)`` returns the previous frame (the confirmation window only
+      changes when a confirmation bar closes, but is evaluated on every primary bar);
+    * otherwise the frame is rebuilt, carrying over the per-bar indicator inputs of the
+      bars shared with the previous call (:meth:`IndicatorInputs.from_bars`).
+
+    Either way the frame equals ``build_feature_frame`` of the same arguments. One entry
+    is kept per key.
+    """
+
+    def __init__(self) -> None:
+        self._last: dict[tuple[str, Timeframe], _MemoEntry] = {}
+
+    def build(
+        self,
+        bars: Sequence[Bar],
+        *,
+        timeframe: Timeframe,
+        periods: IndicatorParams,
+        sessions: Sequence[SessionDay] = (),
+    ) -> FeatureFrame:
+        """:func:`build_feature_frame` of the arguments (see the class)."""
+        bars_key = tuple(bars)
+        sessions_key = tuple(sessions)
+        key = (bars_key[0].symbol if bars_key else "", timeframe)
+        last = self._last.get(key)
+        if (
+            last is not None
+            and last.periods is periods
+            and _same_objects(last.bars, bars_key)
+            and _same_objects(last.sessions, sessions_key)
+        ):
+            return last.frame
+        shared = 0 if last is None else shared_run(last.bars, bars_key)[0]
+        frame, inputs = _build_feature_frame(
+            bars_key,
+            timeframe,
+            periods,
+            sessions_key,
+            previous=None if last is None else last.inputs,
+            valid_prefix=shared,
+        )
+        self._last[key] = _MemoEntry(bars_key, sessions_key, periods, frame, inputs)
+        return frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,26 +494,28 @@ def build_indicator_context(
     confirmation_timeframe: Timeframe | None,
     periods: IndicatorParams,
     sessions: Sequence[SessionDay] = (),
+    memo: FeatureFrameMemo | None = None,
 ) -> IndicatorContext:
     """Build the :class:`IndicatorContext` for one symbol.
 
     Confirmation bars whose ``bar_end_utc`` is after the signal bar's ``bar_end_utc``
-    are dropped (no lookahead across timeframes).
+    are dropped (no lookahead across timeframes). With a ``memo`` (one per stream of
+    windows) both frames are built incrementally with the same result, see
+    :class:`FeatureFrameMemo`.
 
     Raises:
         StrategyInputError: invalid bars, symbols that differ between timeframes, or
             confirmation bars passed without a confirmation timeframe.
     """
-    primary = build_feature_frame(
-        primary_bars, timeframe=primary_timeframe, periods=periods, sessions=sessions
-    )
+    build = build_feature_frame if memo is None else memo.build
+    primary = build(primary_bars, timeframe=primary_timeframe, periods=periods, sessions=sessions)
     signal_bar = primary_bars[-1] if primary_bars else None
     confirmation: FeatureFrame | None = None
     if confirmation_timeframe is not None:
         visible = tuple(confirmation_bars or ())
-        if signal_bar is not None:
+        if signal_bar is not None and visible and max(map(_END, visible)) > signal_bar.bar_end_utc:
             visible = tuple(b for b in visible if b.bar_end_utc <= signal_bar.bar_end_utc)
-        confirmation = build_feature_frame(
+        confirmation = build(
             visible, timeframe=confirmation_timeframe, periods=periods, sessions=sessions
         )
         if signal_bar is not None and visible and visible[0].symbol != signal_bar.symbol:

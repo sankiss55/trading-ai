@@ -14,6 +14,7 @@ from backtest.__main__ import main as cli_main
 from backtest.data import BARS_DIR, load_backtest_data
 from backtest.report import BacktestReport, render_text
 from backtest.runner import BacktestRefusedError, SimulationResult, run_backtest, simulate
+from domain.errors import NonRetryableError
 from domain.models import DataFeed, ExitReason
 from tests.simulation.helpers import FIXTURE_CONFIG, PENDING_CONFIG, fixture_loaded, make_dataset
 
@@ -162,3 +163,41 @@ def test_cli_refuses_pending_config_and_runs_fixture(
     assert "BACKTEST REPORT" in capsys.readouterr().out
     parsed = BacktestReport.model_validate_json(out.read_text(encoding="utf-8"))
     assert parsed.full.trades >= 1
+
+
+# --------------------------------------------------------------------------- parallel scenarios
+
+
+@pytest.mark.parametrize("workers", [2, 3])
+def test_parallel_scenarios_give_the_sequential_report(
+    report: BacktestReport, dataset: Path, workers: int
+) -> None:
+    parallel = run_backtest(
+        fixture_loaded(backtest=SHORT), dataset, starting_cash=CASH, workers=workers
+    )
+    assert parallel.model_dump_json(indent=2) == report.model_dump_json(indent=2)
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_data_errors_are_reported_the_same_way_in_parallel(tmp_path: Path, workers: int) -> None:
+    broken = make_dataset(tmp_path / "broken", end=date(2025, 1, 15))
+    path = broken / BARS_DIR / "SYNTH_1Min.csv"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[5] = lines[5].rsplit(",", 1)[0] + ",-1"  # negative volume
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(NonRetryableError) as info:
+        run_backtest(fixture_loaded(backtest=SHORT), broken, starting_cash=CASH, workers=workers)
+    assert info.value.code == "INVALID_BAR_DATA"
+    assert "SYNTH_1Min.csv:6" in str(info.value)
+
+
+def test_cli_workers_flag_does_not_change_the_report(dataset: Path, tmp_path: Path) -> None:
+    config = FIXTURE_CONFIG
+    args = ["--config", str(config), "--data", str(dataset), "--starting-cash", "100000"]
+    sequential, parallel = tmp_path / "w1.json", tmp_path / "w3.json"
+    assert cli_main([*args, "--workers", "1", "--out", str(sequential)]) == 0
+    assert cli_main([*args, "--workers", "3", "--out", str(parallel)]) == 0
+    assert sequential.read_bytes() == parallel.read_bytes()
+    with pytest.raises(SystemExit) as info:
+        cli_main([*args, "--workers", "0"])
+    assert info.value.code == 2

@@ -478,3 +478,32 @@ async def test_stream_yields_updates_in_emission_order(sim: Sim) -> None:
     ]
     assert received[0].order.order_id == order.order_id
     assert sim.broker.drain_trade_updates() == []
+
+
+# --------------------------------------------------------------------------- live-order index
+
+
+async def test_take_profit_still_fills_after_only_the_stop_leg_is_cancelled(sim: Sim) -> None:
+    # The bracket is evaluated through its (now final) stop leg: it must stay listed
+    # while the take profit is open.
+    order = await sim.broker.submit_bracket(bracket())
+    sim.bar("100.00", "100.50", "99.50", "100.00")
+    tp, sl = leg(order, OrderType.LIMIT), leg(order, OrderType.STOP)
+    await sim.broker.cancel_order(sl.order_id)
+    assert fills(sim.bar("101.00", "101.50", "97.00", "101.00")) == []  # stop gone
+    assert fills(sim.bar("101.00", "102.01", "100.50", "101.50")) == [(tp.order_id, Decimal(102))]
+    assert await sim.broker.get_positions() == []
+
+
+async def test_finished_orders_stay_queryable_and_never_act_again(sim: Sim) -> None:
+    for index in range(30):
+        order = await sim.broker.submit_bracket(bracket(f"paper-{index}-entry"))
+        sim.bar("100.00", "100.50", "99.50", "100.00")  # entry fills
+        sim.bar("101.00", "102.01", "100.50", "101.50")  # take profit fills
+        assert (await sim.order(f"paper-{index}-entry")).status is BrokerOrderStatus.FILLED
+        assert (await sim.broker.get_order_by_client_id(order.client_order_id)) is not None
+    assert await sim.broker.get_open_orders() == []
+    assert await sim.broker.get_positions() == []
+    assert fills(sim.bar("90.00", "110.00", "80.00", "100.00")) == []
+    account = await sim.broker.get_account()
+    assert account.buying_power == sim.broker.cash

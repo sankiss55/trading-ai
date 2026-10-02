@@ -364,3 +364,40 @@ def test_exposed_properties() -> None:
     assert agg.symbols == frozenset({"SPY", "QQQ"})
     assert agg.next_bucket_start("SPY") == OPEN
     assert agg.next_bucket_start("TSLA") is None
+
+
+# --------------------------------------------------------------------------- on_time shortcut
+
+
+def test_extra_clock_steps_never_change_what_closes_or_when() -> None:
+    # on_time skips its scan while no bucket can be due: polling the clock every few
+    # seconds must emit exactly what sparse polling emits, at the first step past due.
+    dense = _agg(symbols=("SPY", "QQQ"), sessions=(SUMMER_DAY, SUMMER_NEXT_DAY))
+    sparse = _agg(symbols=("SPY", "QQQ"), sessions=(SUMMER_DAY, SUMMER_NEXT_DAY))
+    minutes = [m for m in range(0, 200) if m % 7 not in (3, 4)]  # gaps: some close by time
+    dense_out: list[Bar] = []
+    sparse_out: list[Bar] = []
+    for minute in minutes:
+        bar = minute_bar(_at(minute), symbol="SPY" if minute % 2 else "QQQ")
+        dense_out.extend(dense.ingest(bar).closed_bars)
+        sparse_out.extend(sparse.ingest(bar).closed_bars)
+        for second in range(0, 60, 5):
+            dense_out.extend(dense.on_time(_at(minute) + timedelta(seconds=second)))
+        sparse_out.extend(sparse.on_time(_at(minute + 1)))
+    end = SUMMER_NEXT_DAY.close_utc + timedelta(minutes=1)
+    dense_out.extend(dense.on_time(end))
+    sparse_out.extend(sparse.on_time(end))
+    assert sorted(dense_out, key=lambda b: (b.bar_start_utc, b.symbol)) == sorted(
+        sparse_out, key=lambda b: (b.bar_start_utc, b.symbol)
+    )
+    assert len(dense_out) == 2 * 2 * 78
+
+
+def test_on_time_resumes_after_a_session_is_added() -> None:
+    agg = _agg(sessions=(SUMMER_DAY,))
+    assert len(agg.on_time(SUMMER_DAY.close_utc + timedelta(hours=1))) == 78
+    assert agg.on_time(SUMMER_DAY.close_utc + timedelta(hours=2)) == ()
+    agg.add_session(SUMMER_NEXT_DAY)
+    closed = agg.on_time(SUMMER_NEXT_DAY.open_utc + timedelta(minutes=5, seconds=11))
+    assert [b.bar_start_utc for b in closed] == [SUMMER_NEXT_DAY.open_utc]
+    assert agg.on_time(SUMMER_NEXT_DAY.open_utc + timedelta(minutes=10, seconds=10)) == ()

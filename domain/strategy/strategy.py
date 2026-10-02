@@ -66,6 +66,7 @@ from domain.models import (
 )
 from domain.strategy.features import (
     SERIES_PERIOD_PARAM,
+    FeatureFrameMemo,
     IndicatorContext,
     IndicatorParams,
     build_indicator_context,
@@ -367,6 +368,7 @@ class Strategy:
             _require(params.exit_rules, "strategy.exit_rules") if reversal else ()
         )
         self._thresholds: dict[str, Decimal | None] = dict(params.no_trade_thresholds)
+        self._frames = FeatureFrameMemo()
 
     @property
     def params(self) -> StrategyParams:
@@ -387,6 +389,10 @@ class Strategy:
     ) -> IndicatorContext:
         """Build the indicator context from closed bars of one symbol.
 
+        Successive calls on a sliding window are built incrementally (a
+        :class:`FeatureFrameMemo` per strategy); the context always equals
+        ``build_indicator_context`` of the same arguments.
+
         Args:
             primary_bars: Closed primary bars, oldest first; the last one is the bar the
                 decision refers to (it may be EMPTY or INCOMPLETE).
@@ -401,6 +407,7 @@ class Strategy:
             confirmation_timeframe=self._params.confirmation_timeframe,
             periods=self._params.indicators,
             sessions=sessions,
+            memo=self._frames,
         )
 
     def _signal_bar(self, context: IndicatorContext) -> Bar:

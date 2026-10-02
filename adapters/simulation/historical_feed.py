@@ -24,7 +24,8 @@ symbol.
 from __future__ import annotations
 
 import csv
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from bisect import bisect_left
+from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -64,8 +65,27 @@ def load_bars_csv(path: Path, *, symbol: str, timeframe: Timeframe, feed: DataFe
     Raises:
         NonRetryableError: code ``INVALID_BAR_DATA`` for a bad header or row.
     """
+    return list(_iter_bars_csv(path, symbol=symbol, timeframe=timeframe, feed=feed))
+
+
+def _iter_bars_csv(
+    path: Path, *, symbol: str, timeframe: Timeframe, feed: DataFeed
+) -> Iterator[Bar]:
+    """Validated ``Bar`` of each row of ``path``, in file order (see :func:`load_bars_csv`).
+
+    Equal price texts share one ``Decimal`` object (immutable, parsed from the same
+    text, so the values and their exponents are identical): this keeps a large stored
+    dataset small without changing any value.
+    """
     duration = bar_duration(timeframe)
-    bars: list[Bar] = []
+    decimals: dict[str, Decimal] = {}
+
+    def parse_decimal(text: str) -> Decimal:
+        value = decimals.get(text)
+        if value is None:
+            value = decimals[text] = _parse_decimal(text)
+        return value
+
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         if tuple(reader.fieldnames or ()) != CSV_COLUMNS:
@@ -75,30 +95,98 @@ def load_bars_csv(path: Path, *, symbol: str, timeframe: Timeframe, feed: DataFe
         for line_number, row in enumerate(reader, start=2):
             try:
                 start = _parse_utc(row["t"])
-                bars.append(
-                    Bar(
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        bar_start_utc=start,
-                        bar_end_utc=start + duration,
-                        open=_parse_decimal(row["o"]),
-                        high=_parse_decimal(row["h"]),
-                        low=_parse_decimal(row["l"]),
-                        close=_parse_decimal(row["c"]),
-                        volume=int(row["v"]),
-                        feed=feed,
-                        status=BarStatus.COMPLETE,
-                    )
+                bar = Bar(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    bar_start_utc=start,
+                    bar_end_utc=start + duration,
+                    open=parse_decimal(row["o"]),
+                    high=parse_decimal(row["h"]),
+                    low=parse_decimal(row["l"]),
+                    close=parse_decimal(row["c"]),
+                    volume=int(row["v"]),
+                    feed=feed,
+                    status=BarStatus.COMPLETE,
                 )
             except (ValueError, TypeError) as exc:
                 raise NonRetryableError(
                     f"{path.name}:{line_number}: {exc}", code="INVALID_BAR_DATA"
                 ) from exc
-    return bars
+            yield bar
 
 
 def _stream_key(bar: Bar) -> tuple[datetime, str]:
     return (bar.bar_start_utc, bar.symbol)
+
+
+def _duplicate_error(symbol: str, timeframe: Timeframe, start: datetime) -> NonRetryableError:
+    return NonRetryableError(
+        f"duplicate bar {symbol} {timeframe} {start.isoformat()}", code="DUPLICATE_BAR"
+    )
+
+
+class _BarSeries:
+    """Stored bars of one ``(symbol, timeframe)``, sorted by start, kept as ``Bar``."""
+
+    __slots__ = ("_bars", "starts")
+
+    def __init__(self, bars: list[Bar]) -> None:
+        bars.sort(key=lambda b: b.bar_start_utc)
+        self._bars = bars
+        self.starts = [bar.bar_start_utc for bar in bars]
+
+    def bars(self, first: int = 0, last: int | None = None) -> list[Bar]:
+        """Stored bars ``[first:last]``."""
+        return self._bars[first:last]
+
+
+_Row = tuple[datetime, Decimal, Decimal, Decimal, Decimal, int]
+"""``(bar_start_utc, open, high, low, close, volume)`` of a validated stored bar."""
+
+
+class _CompactSeries:
+    """Validated CSV bars of one ``(symbol, timeframe)``, sorted by start, kept compact.
+
+    Every row was validated once as a ``Bar`` when its file was loaded; only the
+    validated values are kept (a few hundred bytes less per bar than a model, which
+    matters for millions of minute bars). :meth:`bars` rebuilds the models from them
+    with ``Bar.model_construct`` (no second validation): each rebuilt bar equals the
+    validated one field by field, ``bar_end_utc`` being ``bar_start_utc + duration`` as
+    at load time.
+    """
+
+    __slots__ = ("_duration", "_feed", "_rows", "_symbol", "_timeframe", "starts")
+
+    def __init__(self, symbol: str, timeframe: Timeframe, feed: DataFeed, rows: list[_Row]) -> None:
+        rows.sort(key=lambda r: r[0])
+        self._symbol = symbol
+        self._timeframe = timeframe
+        self._feed = feed
+        self._duration = bar_duration(timeframe)
+        self._rows = rows
+        self.starts = [row[0] for row in rows]
+
+    def bars(self, first: int = 0, last: int | None = None) -> list[Bar]:
+        """Stored bars ``[first:last]`` (rebuilt from validated values)."""
+        construct = Bar.model_construct
+        symbol, timeframe, feed = self._symbol, self._timeframe, self._feed
+        duration = self._duration
+        return [
+            construct(
+                symbol=symbol,
+                timeframe=timeframe,
+                bar_start_utc=start,
+                bar_end_utc=start + duration,
+                open=open_,
+                high=high,
+                low=low,
+                close=close,
+                volume=volume,
+                feed=feed,
+                status=BarStatus.COMPLETE,
+            )
+            for start, open_, high, low, close, volume in self._rows[first:last]
+        ]
 
 
 class HistoricalFeed:
@@ -122,19 +210,17 @@ class HistoricalFeed:
         clock: AdvanceableClock | None = None,
         quotes: Mapping[str, Sequence[Quote]] | None = None,
     ) -> None:
-        self._by_key: dict[tuple[str, Timeframe], list[Bar]] = {}
+        grouped: dict[tuple[str, Timeframe], list[Bar]] = {}
         seen: set[tuple[str, Timeframe, datetime]] = set()
         for bar in bars:
             key = (bar.symbol, bar.timeframe, bar.bar_start_utc)
             if key in seen:
-                raise NonRetryableError(
-                    f"duplicate bar {bar.symbol} {bar.timeframe} {bar.bar_start_utc.isoformat()}",
-                    code="DUPLICATE_BAR",
-                )
+                raise _duplicate_error(bar.symbol, bar.timeframe, bar.bar_start_utc)
             seen.add(key)
-            self._by_key.setdefault((bar.symbol, bar.timeframe), []).append(bar)
-        for series in self._by_key.values():
-            series.sort(key=lambda b: b.bar_start_utc)
+            grouped.setdefault((bar.symbol, bar.timeframe), []).append(bar)
+        self._series: dict[tuple[str, Timeframe], _BarSeries | _CompactSeries] = {
+            key: _BarSeries(series) for key, series in grouped.items()
+        }
         self._clock = clock
         self._quotes = {
             symbol: sorted(items, key=lambda q: q.timestamp_utc)
@@ -153,6 +239,10 @@ class HistoricalFeed:
     ) -> HistoricalFeed:
         """Load every ``{SYMBOL}_{TIMEFRAME}.csv`` file in ``directory`` (sorted by name).
 
+        Every row is validated as a ``Bar`` while loading (errors are raised here, file
+        by file, then duplicates); the validated values are stored compactly and served
+        without a second validation (see :class:`_CompactSeries`).
+
         Args:
             directory: Directory of the bar files.
             feed: Feed the bars are tagged with.
@@ -162,9 +252,10 @@ class HistoricalFeed:
             quotes: See the class.
 
         Raises:
-            NonRetryableError: code ``INVALID_BAR_DATA`` for a bad file name or content.
+            NonRetryableError: code ``INVALID_BAR_DATA`` for a bad file name or content,
+                ``DUPLICATE_BAR`` for a repeated ``(symbol, timeframe, t)``.
         """
-        bars: list[Bar] = []
+        grouped: dict[tuple[str, Timeframe], tuple[DataFeed, list[_Row]]] = {}
         for path in sorted(directory.glob("*.csv")):
             symbol, sep, timeframe_text = path.stem.rpartition("_")
             try:
@@ -178,26 +269,56 @@ class HistoricalFeed:
                     f"{path.name}: expected SYMBOL_TIMEFRAME.csv", code="INVALID_BAR_DATA"
                 )
             file_feed = (feed_by_timeframe or {}).get(timeframe, feed)
-            bars.extend(load_bars_csv(path, symbol=symbol, timeframe=timeframe, feed=file_feed))
-        return cls(bars, clock=clock, quotes=quotes)
+            _, rows = grouped.setdefault((symbol, timeframe), (file_feed, []))
+            for bar in _iter_bars_csv(path, symbol=symbol, timeframe=timeframe, feed=file_feed):
+                if bar.open is None or bar.high is None or bar.low is None or bar.close is None:
+                    raise NonRetryableError(  # pragma: no cover - COMPLETE bars carry prices
+                        f"{path.name}: bar without prices", code="INVALID_BAR_DATA"
+                    )
+                rows.append((bar.bar_start_utc, bar.open, bar.high, bar.low, bar.close, bar.volume))
+        # Same duplicate check, in the same order, as the constructor (file, then row).
+        seen: set[tuple[str, Timeframe, datetime]] = set()
+        for (symbol, timeframe), (_, rows) in grouped.items():
+            for row in rows:
+                key = (symbol, timeframe, row[0])
+                if key in seen:
+                    raise _duplicate_error(symbol, timeframe, row[0])
+                seen.add(key)
+        loaded = cls(clock=clock, quotes=quotes)
+        for (symbol, timeframe), (file_feed, rows) in grouped.items():
+            if rows:
+                loaded._series[(symbol, timeframe)] = _CompactSeries(
+                    symbol, timeframe, file_feed, rows
+                )
+        return loaded
 
     def _known(self, bar: Bar) -> bool:
         return self._clock is None or bar.bar_end_utc <= self._clock.now_utc()
 
+    def _all(self, symbol: str, timeframe: Timeframe) -> list[Bar]:
+        series = self._series.get((symbol, timeframe))
+        return [] if series is None else series.bars()
+
     async def get_minute_bars(self, symbol: str, start: datetime, end: datetime) -> list[Bar]:
         """``1Min`` bars fully inside ``[start, end]``: ``start <= bar_start_utc`` and
-        ``bar_end_utc <= end``, sorted by time."""
+        ``bar_end_utc <= end``, sorted by time.
+
+        The series is sorted by start, so the candidates ``start <= bar_start_utc < end``
+        are found by bisection (a bar starting at or after ``end`` ends after it).
+        """
+        series = self._series.get((symbol, Timeframe.MIN_1))
+        if series is None:
+            return []
+        first, last = bisect_left(series.starts, start), bisect_left(series.starts, end)
         return [
-            bar
-            for bar in self._by_key.get((symbol, Timeframe.MIN_1), [])
-            if start <= bar.bar_start_utc and bar.bar_end_utc <= end and self._known(bar)
+            bar for bar in series.bars(first, last) if bar.bar_end_utc <= end and self._known(bar)
         ]
 
     async def get_daily_bars(self, symbol: str, start: date, end: date) -> list[Bar]:
         """``1Day`` bars whose UTC start date is in ``[start, end]`` (inclusive)."""
         return [
             bar
-            for bar in self._by_key.get((symbol, Timeframe.DAY_1), [])
+            for bar in self._all(symbol, Timeframe.DAY_1)
             if start <= bar.bar_start_utc.date() <= end and self._known(bar)
         ]
 
@@ -218,7 +339,7 @@ class HistoricalFeed:
         """
         wanted = sorted(set(symbols))
         merged = sorted(
-            (bar for symbol in wanted for bar in self._by_key.get((symbol, Timeframe.MIN_1), [])),
+            (bar for symbol in wanted for bar in self._all(symbol, Timeframe.MIN_1)),
             key=_stream_key,
         )
         for bar in merged:

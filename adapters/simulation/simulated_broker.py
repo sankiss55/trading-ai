@@ -197,6 +197,11 @@ class SimulatedBroker:
         self._seq = 0
         self._fill_seq = 0
         self._orders: dict[str, _SimOrder] = {}
+        self._live: dict[str, _SimOrder] = {}
+        """Orders of every group (simple order, or bracket parent + legs) with at least
+        one non-final member, in creation (``seq``) order. A final status never becomes
+        open again, so a group leaves this index for good once all its members are final.
+        """
         self._by_client_id: dict[str, str] = {}
         self._positions: dict[str, _SimPosition] = {}
         self._last_close: dict[str, Decimal] = {}
@@ -685,6 +690,7 @@ class SimulatedBroker:
             updated_at=now,
         )
         self._orders[order_id] = order
+        self._live[order_id] = order
         self._by_client_id[order.client_order_id] = order_id
         return order
 
@@ -741,7 +747,27 @@ class SimulatedBroker:
         )
 
     def _ordered(self) -> list[_SimOrder]:
-        return sorted(self._orders.values(), key=lambda o: o.seq)
+        """Orders that may still act, in ``seq`` order.
+
+        Equivalent to every order sorted by ``seq`` for all callers: they skip orders
+        whose whole group is final (a bracket's legs are evaluated through its stop
+        leg, so a final stop leg stays listed while a sibling is open). Orders are
+        created in ``seq`` order, so the insertion order of ``_live`` is ``seq`` order.
+        """
+        finished = [
+            order_id
+            for order_id, order in self._live.items()
+            if order.status not in _OPEN and not self._group_open(order)
+        ]
+        for order_id in finished:
+            del self._live[order_id]
+        return list(self._live.values())
+
+    def _group_open(self, order: _SimOrder) -> bool:
+        root = order if order.parent_id is None else self._orders[order.parent_id]
+        return root.status in _OPEN or any(
+            self._orders[leg].status in _OPEN for leg in root.leg_ids
+        )
 
     def _mark(self, symbol: str) -> Decimal:
         close = self._last_close.get(symbol)
@@ -751,14 +777,14 @@ class SimulatedBroker:
         return position.avg_price if position is not None else _ZERO
 
     def _buying_power(self) -> Decimal:
-        reserved = sum((o.reserved_cash for o in self._orders.values() if o.status in _OPEN), _ZERO)
+        reserved = sum((o.reserved_cash for o in self._ordered() if o.status in _OPEN), _ZERO)
         return self._cash - reserved
 
     def _reserved_sell_qty(self, symbol: str) -> int:
         """Quantity held by active SELL orders; OCO legs of one bracket hold it once."""
         simple = 0
         per_bracket: dict[str, int] = {}
-        for o in self._orders.values():
+        for o in self._ordered():
             if o.symbol != symbol or o.side is not OrderSide.SELL or o.status not in _ACTIVE:
                 continue
             remaining = o.qty - o.filled_qty

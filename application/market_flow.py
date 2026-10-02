@@ -30,6 +30,7 @@ passed in by the caller as a :class:`TradeBook` (Phase 2+: ``IUnitOfWork``).
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import deque
 from collections.abc import Mapping
 from datetime import datetime
@@ -292,6 +293,7 @@ class MarketFlow:
             s: deque(maxlen=size) for s in params.symbols
         }
         self._sessions: list[SessionDay] = []
+        self._session_closes: list[datetime] = []
 
     # ------------------------------------------------------------------ accessors
 
@@ -312,6 +314,7 @@ class MarketFlow:
         if self._confirm_agg is not None:
             self._confirm_agg.add_session(session)
         self._sessions.append(session)
+        self._session_closes.append(session.close_utc)
 
     def session_of(self, instant: datetime) -> SessionDay | None:
         """Registered session containing ``instant`` (``open <= instant < close``)."""
@@ -427,10 +430,9 @@ class MarketFlow:
 
     def _sessions_covering(self, since: datetime) -> tuple[SessionDay, ...]:
         """Sessions overlapping the window plus the one before (``gap_pct``)."""
-        first = next(
-            (i for i, s in enumerate(self._sessions) if s.close_utc > since),
-            len(self._sessions),
-        )
+        # Sessions are registered in strictly increasing order (the aggregator refuses
+        # anything else), so the first session closing after ``since`` is a bisection.
+        first = bisect_right(self._session_closes, since)
         return tuple(self._sessions[max(first - 1, 0) :])
 
     async def _price_entry(

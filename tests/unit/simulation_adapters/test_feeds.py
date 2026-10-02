@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -189,3 +190,86 @@ async def test_scripted_feed_history_and_quotes() -> None:
     assert await feed.get_minute_bars("SPY", T0, T0 + 2 * MINUTE) == history[:2]
     assert await feed.get_daily_bars("SPY", date(2026, 10, 1), date(2026, 10, 1)) == []
     assert await feed.get_latest_quote("SPY") is None
+
+
+# --------------------------------------------------------------------------- compact CSV storage
+
+
+def _write_minutes(path: Path, rows: list[str]) -> None:
+    path.write_text("t,o,h,l,c,v\n" + "".join(f"{row}\n" for row in rows), encoding="utf-8")
+
+
+def _minute_rows(count: int, *, shuffle_seed: int | None = None) -> list[str]:
+    rows = [
+        f"{(T0 + i * MINUTE).strftime('%Y-%m-%dT%H:%M:%SZ')},"
+        f"{100 + i % 7}.10,{101 + i % 7}.00,{99 + i % 7}.90,{100 + i % 7}.50,{1000 + i}"
+        for i in range(count)
+    ]
+    if shuffle_seed is not None:
+        random.Random(shuffle_seed).shuffle(rows)
+    return rows
+
+
+async def test_csv_dir_serves_the_validated_bars_of_each_file(tmp_path: Path) -> None:
+    _write_minutes(tmp_path / "SPY_1Min.csv", _minute_rows(120, shuffle_seed=1))
+    _write_minutes(tmp_path / "QQQ_1Min.csv", _minute_rows(30))
+    feed = HistoricalFeed.from_csv_dir(tmp_path, feed=DataFeed.IEX)
+    for symbol in ("SPY", "QQQ"):
+        loaded = load_bars_csv(
+            tmp_path / f"{symbol}_1Min.csv", symbol=symbol, timeframe=Timeframe.MIN_1,
+            feed=DataFeed.IEX,
+        )  # fmt: skip
+        reference = HistoricalFeed(loaded)
+        served = [bar async for bar in feed.stream_minute_bars([symbol])]
+        expected = [bar async for bar in reference.stream_minute_bars([symbol])]
+        assert served == expected
+        for got, want in zip(served, expected, strict=True):
+            assert got.model_fields_set == want.model_fields_set
+            assert got.model_dump_json() == want.model_dump_json()
+    # Random windows: bisection gives exactly the linear filter of the reference.
+    rng = random.Random(3)
+    reference = HistoricalFeed(
+        load_bars_csv(
+            tmp_path / "SPY_1Min.csv", symbol="SPY", timeframe=Timeframe.MIN_1, feed=DataFeed.IEX
+        )
+    )
+    for _ in range(200):
+        start = T0 + timedelta(seconds=rng.randint(-120, 130 * 60))
+        end = start + timedelta(seconds=rng.randint(-60, 40 * 60))
+        assert await feed.get_minute_bars("SPY", start, end) == await reference.get_minute_bars(
+            "SPY", start, end
+        )
+
+
+def test_csv_prices_keep_their_text_representation(tmp_path: Path) -> None:
+    _write_minutes(
+        tmp_path / "SPY_1Min.csv",
+        [
+            "2026-10-01T13:30:00Z,100.0,101,99.50,100.0,1",
+            "2026-10-01T13:31:00Z,100.00,101,99.5,100,1",
+        ],
+    )
+    [first, second] = load_bars_csv(
+        tmp_path / "SPY_1Min.csv", symbol="SPY", timeframe=Timeframe.MIN_1, feed=DataFeed.IEX
+    )
+    assert (str(first.open), str(second.open)) == ("100.0", "100.00")
+    assert (str(first.low), str(second.low)) == ("99.50", "99.5")
+    assert first.high is second.high  # same text: one shared immutable Decimal
+
+
+def test_csv_dir_rejects_duplicate_rows(tmp_path: Path) -> None:
+    rows = _minute_rows(3)
+    _write_minutes(tmp_path / "SPY_1Min.csv", [*rows, rows[1]])
+    with pytest.raises(NonRetryableError) as excinfo:
+        HistoricalFeed.from_csv_dir(tmp_path, feed=DataFeed.IEX)
+    assert excinfo.value.code == "DUPLICATE_BAR"
+    assert str(excinfo.value).endswith(f"duplicate bar SPY 1Min {(T0 + MINUTE).isoformat()}")
+
+
+def test_csv_dir_reports_invalid_rows_of_any_file_before_duplicates(tmp_path: Path) -> None:
+    rows = _minute_rows(2)
+    _write_minutes(tmp_path / "AAA_1Min.csv", [*rows, rows[0]])  # duplicate, first file
+    _write_minutes(tmp_path / "ZZZ_1Min.csv", ["2026-10-01T13:30:00Z,1,2,abc,2,10"])
+    with pytest.raises(NonRetryableError) as excinfo:
+        HistoricalFeed.from_csv_dir(tmp_path, feed=DataFeed.IEX)
+    assert excinfo.value.code == "INVALID_BAR_DATA"

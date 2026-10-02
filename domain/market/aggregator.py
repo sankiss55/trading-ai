@@ -145,6 +145,9 @@ class BarAggregator:
         self._sessions: list[SessionDay] = []
         self._opens: list[datetime] = []
         self._states: dict[str, _SymbolState] = {symbol: _SymbolState() for symbol in symbols}
+        self._due: datetime | None = None
+        """Earliest ``end + grace`` of the next bucket of every symbol (``None`` = to be
+        computed): :meth:`on_time` closes nothing while ``now_utc`` is not after it."""
 
     # ------------------------------------------------------------------ public API
 
@@ -172,6 +175,7 @@ class BarAggregator:
             )
         self._sessions.append(session)
         self._opens.append(session.open_utc)
+        self._due = None
 
     def next_bucket_start(self, symbol: Symbol) -> datetime | None:
         """Start of the earliest bucket of ``symbol`` not yet emitted.
@@ -230,6 +234,8 @@ class BarAggregator:
 
         Returns the newly closed bars sorted by ``(bar_start_utc, symbol)``.
         """
+        if self._due is not None and not now_utc > self._due:
+            return ()
         emitted: list[Bar] = []
         for symbol in sorted(self._states):
             state = self._states[symbol]
@@ -239,7 +245,18 @@ class BarAggregator:
                     break
                 emitted.append(self._emit(symbol, state))
         emitted.sort(key=lambda b: (b.bar_start_utc, b.symbol))
+        self._due = self._next_due()
         return tuple(emitted)
+
+    def _next_due(self) -> datetime | None:
+        """Earliest ``end + grace`` over the symbols with a bucket left; ``None`` when no
+        bucket is left (nothing can close until a session is added)."""
+        ends = [
+            self._bounds(state.cursor)[1]
+            for state in self._states.values()
+            if state.cursor[0] < len(self._sessions)
+        ]
+        return min(ends) + self._grace if ends else None
 
     # ------------------------------------------------------------------ internals
 
@@ -293,6 +310,7 @@ class BarAggregator:
         for old in [k for k in state.closed_minutes if k < session_index - 1]:
             del state.closed_minutes[old]
         state.cursor = self._advance(bucket_id)
+        self._due = None
         start, end = self._bounds(bucket_id)
         return self._build_bar(symbol, start, end, minutes)
 

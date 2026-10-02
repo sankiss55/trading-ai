@@ -33,6 +33,11 @@ Slippage sensitivity: the simulation is repeated with the broker slippage
 (``risk.slippage_buffer_bps``) multiplied by 1.5 and 2.0; sizing keeps the configured
 buffer.
 
+Parallelism: the base run and the sensitivity runs are independent deterministic
+simulations. With ``workers > 1`` they run in separate processes (each loads the
+dataset itself); results are collected in the fixed scenario order, so the report is
+byte-identical to the sequential run (``workers = 1``: one process, one load).
+
 Refusal: if any OWNER_DECISION the backtest needs is ``null`` the runner raises
 :class:`BacktestRefusedError` listing them; no default is invented. The sec. 45.4
 thresholds may be ``null``: the report status is then ``PENDING_OWNER_DECISION``.
@@ -44,8 +49,10 @@ import asyncio
 import calendar as _calendar
 import hashlib
 import math
+import os
 from collections import Counter
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -108,6 +115,7 @@ __all__ = [
     "SimulationResult",
     "add_months",
     "data_fingerprint",
+    "default_workers",
     "run_backtest",
     "run_backtest_async",
     "simulate",
@@ -720,14 +728,97 @@ def _metrics(
     )
 
 
+def default_workers() -> int:
+    """Default process count: one per scenario (base + sensitivity), at most the CPUs."""
+    return max(1, min(1 + len(SLIPPAGE_MULTIPLIERS), os.cpu_count() or 1))
+
+
+_WORKER_DATA: dict[tuple[Path, DataFeed], BacktestData] = {}
+"""Dataset loaded by a worker process, reused if the pool gives it another scenario."""
+
+
+def _simulate_scenario(
+    config: AppConfig,
+    data_dir: Path,
+    feed: DataFeed,
+    starting_cash: Decimal,
+    commission_per_fill: Decimal,
+    slippage_multiplier: Decimal,
+) -> SimulationResult:
+    """Worker-process entry point: load the dataset (once per process) and simulate."""
+    key = (data_dir, feed)
+    data = _WORKER_DATA.get(key)
+    if data is None:
+        data = _WORKER_DATA[key] = load_backtest_data(data_dir, feed=feed)
+    return asyncio.run(
+        simulate(
+            config,
+            data,
+            starting_cash=starting_cash,
+            commission_per_fill=commission_per_fill,
+            slippage_multiplier=slippage_multiplier,
+        )
+    )
+
+
+async def _run_scenarios(
+    config: AppConfig,
+    data_dir: Path,
+    feed: DataFeed,
+    *,
+    starting_cash: Decimal,
+    commission_per_fill: Decimal,
+    multipliers: Sequence[Decimal],
+    workers: int,
+) -> list[SimulationResult]:
+    """One simulation per slippage multiplier, returned in ``multipliers`` order."""
+    if workers <= 1:
+        data = load_backtest_data(data_dir, feed=feed)
+        return [
+            await simulate(
+                config,
+                data,
+                starting_cash=starting_cash,
+                commission_per_fill=commission_per_fill,
+                slippage_multiplier=multiplier,
+            )
+            for multiplier in multipliers
+        ]
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(max_workers=min(workers, len(multipliers))) as pool:
+        futures = [
+            loop.run_in_executor(
+                pool,
+                _simulate_scenario,
+                config,
+                data_dir,
+                feed,
+                starting_cash,
+                commission_per_fill,
+                multiplier,
+            )
+            for multiplier in multipliers
+        ]
+        return list(await asyncio.gather(*futures))
+
+
 async def run_backtest_async(
     loaded: LoadedConfig,
     data_dir: Path,
     *,
     starting_cash: Decimal,
     commission_per_fill: Decimal = Decimal(0),
+    workers: int = 1,
 ) -> BacktestReport:
     """Full backtest (sec. 45): base run, splits, walk-forward, slippage sensitivity.
+
+    Args:
+        loaded: Validated configuration.
+        data_dir: Dataset directory.
+        starting_cash: Initial capital.
+        commission_per_fill: Flat commission per fill.
+        workers: Processes for the base and sensitivity simulations (``1`` = all in
+            this process). The report does not depend on it.
 
     Raises:
         BacktestRefusedError: a required OWNER_DECISION is ``null`` (nothing is run).
@@ -753,19 +844,17 @@ async def run_backtest_async(
         or primary is None
     ):  # pragma: no cover - guarded by _require_runnable
         raise BacktestRefusedError(pending_backtest_decisions(config))
-    data = load_backtest_data(data_dir, feed=DataFeed(feed))
-    base = await simulate(
-        config, data, starting_cash=starting_cash, commission_per_fill=commission_per_fill
+    base, *runs = await _run_scenarios(
+        config,
+        data_dir,
+        DataFeed(feed),
+        starting_cash=starting_cash,
+        commission_per_fill=commission_per_fill,
+        multipliers=(Decimal(1), *SLIPPAGE_MULTIPLIERS),
+        workers=workers,
     )
     scenarios = []
-    for multiplier in SLIPPAGE_MULTIPLIERS:
-        run = await simulate(
-            config,
-            data,
-            starting_cash=starting_cash,
-            commission_per_fill=commission_per_fill,
-            slippage_multiplier=multiplier,
-        )
+    for multiplier, run in zip(SLIPPAGE_MULTIPLIERS, runs, strict=True):
         scenarios.append(
             SlippageScenario(
                 multiplier=multiplier,
@@ -830,10 +919,15 @@ def run_backtest(
     *,
     starting_cash: Decimal,
     commission_per_fill: Decimal = Decimal(0),
+    workers: int = 1,
 ) -> BacktestReport:
     """Synchronous wrapper of :func:`run_backtest_async`."""
     return asyncio.run(
         run_backtest_async(
-            loaded, data_dir, starting_cash=starting_cash, commission_per_fill=commission_per_fill
+            loaded,
+            data_dir,
+            starting_cash=starting_cash,
+            commission_per_fill=commission_per_fill,
+            workers=workers,
         )
     )
