@@ -84,25 +84,32 @@ def _spec(**overrides: Any) -> DownloadSpec:
     return DownloadSpec(**values)
 
 
+_POLICY = RetryPolicy(max_attempts=2, base_delay_seconds=0.0)
+
+
+def _market_data(bars_client: FakeBarsClient, feed: DataFeed) -> AlpacaMarketData:
+    return AlpacaMarketData(
+        bars_client,
+        feed=feed,
+        adjustment=BarAdjustment.SPLIT,
+        retry_policy=_POLICY,
+        sleep=SleepRecorder(),
+    )
+
+
+def _calendar(days: list[dict[str, str]]) -> AlpacaCalendar:
+    return AlpacaCalendar(FakeCalendarClient(days), retry_policy=_POLICY, sleep=SleepRecorder())
+
+
 def _sources(
     bars_client: FakeBarsClient, *, daily_feed: DataFeed = DataFeed.SIP
 ) -> tuple[AlpacaMarketData, AlpacaMarketData, AlpacaCalendar]:
     """Minute (IEX) and daily (``daily_feed``) market data over ONE recording client."""
-    policy = RetryPolicy(max_attempts=2, base_delay_seconds=0.0)
-
-    def market_data(feed: DataFeed) -> AlpacaMarketData:
-        return AlpacaMarketData(
-            bars_client,
-            feed=feed,
-            adjustment=BarAdjustment.SPLIT,
-            retry_policy=policy,
-            sleep=SleepRecorder(),
-        )
-
-    calendar = AlpacaCalendar(
-        FakeCalendarClient(_calendar_days()), retry_policy=policy, sleep=SleepRecorder()
+    return (
+        _market_data(bars_client, DataFeed.IEX),
+        _market_data(bars_client, daily_feed),
+        _calendar(_calendar_days()),
     )
-    return market_data(DataFeed.IEX), market_data(daily_feed), calendar
 
 
 async def _download(
@@ -234,6 +241,7 @@ async def test_manifest_records_both_feeds(tmp_path: Path) -> None:
     assert dataset["feeds"] == {"1Min": "iex", "1Day": "sip"}
     assert dataset["version"] == 2
     assert "feed" not in dataset
+    assert "daily_only" not in dataset  # minute manifests unchanged by the daily-only mode
 
 
 async def test_resume_with_a_different_daily_feed_is_refused(tmp_path: Path) -> None:
@@ -290,6 +298,10 @@ async def test_loader_refuses_a_strategy_feed_other_than_the_minute_feed(
         '{"version": 1, "feed": "iex"}',
         '{"version": 2, "feeds": {"1Min": "iex"}}',
         '{"version": 2, "feeds": {"1Min": "iex", "1Day": "nasdaq"}}',
+        '{"version": 2, "feeds": {"1Day": "sip"}}',
+        '{"version": 2, "daily_only": true, "feeds": {"1Min": "sip", "1Day": "sip"}}',
+        '{"version": 2, "daily_only": "yes", "feeds": {"1Day": "sip"}}',
+        '["version", 2]',
     ],
 )
 async def test_loader_rejects_an_invalid_dataset_manifest(tmp_path: Path, content: str) -> None:
@@ -318,12 +330,247 @@ async def test_legacy_dataset_without_manifest_uses_one_feed(tmp_path: Path) -> 
         {"symbols": ("spy",)},
         {"end": date(2025, 6, 1)},
         {"daily_warmup_days": -1},
+        {
+            "daily_only": True,
+            "feed": DataFeed.IEX,
+            "daily_feed": DataFeed.SIP,
+            "daily_warmup_days": 0,
+        },
+        {
+            "daily_only": True,
+            "feed": DataFeed.SIP,
+            "daily_feed": DataFeed.SIP,
+            "daily_warmup_days": 5,
+        },
     ],
 )
 def test_invalid_spec_is_rejected(overrides: dict[str, Any]) -> None:
     with pytest.raises(NonRetryableError) as info:
         _spec(**overrides)
     assert info.value.code == "INVALID_DOWNLOAD_SPEC"
+
+
+# --------------------------------------------------------------------------- daily only
+
+DAILY_HOLIDAYS = {date(2024, 12, 25), date(2025, 1, 1), date(2025, 1, 9), date(2025, 1, 20)}
+DAILY_DAYS = weekdays(date(2024, 12, 2), date(2025, 1, 31), holidays=DAILY_HOLIDAYS)
+DAILY_EARLY_CLOSE = date(2024, 12, 24)
+DAILY_START, DAILY_END = date(2024, 12, 16), date(2025, 1, 15)  # two year chunks
+DAILY_SESSIONS = [d for d in DAILY_DAYS if DAILY_START <= d <= DAILY_END]
+
+
+def _daily_calendar_days() -> list[dict[str, str]]:
+    return [
+        calendar_payload(d, close_hhmm="13:00" if d == DAILY_EARLY_CLOSE else "16:00")
+        for d in DAILY_DAYS
+    ]
+
+
+def _daily_payloads() -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """SIP-like daily bars labelled at New York midnight (05:00Z in winter), no minutes."""
+    return {
+        (symbol, "1Day"): [
+            bar_payload(
+                datetime(d.year, d.month, d.day, 5, 0, tzinfo=UTC),
+                400.0 + 100 * index + day_index,
+                volume=1e6,
+            )
+            for day_index, d in enumerate(DAILY_DAYS)
+        ]
+        for index, symbol in enumerate(SYMBOLS)
+    }
+
+
+def _daily_spec(**overrides: Any) -> DownloadSpec:
+    values: dict[str, Any] = {
+        "symbols": SYMBOLS,
+        "start": DAILY_START,
+        "end": DAILY_END,
+        "feed": DataFeed.SIP,
+        "daily_feed": DataFeed.SIP,
+        "adjustment": BarAdjustment.SPLIT,
+        "daily_warmup_days": 0,
+        "daily_only": True,
+    }
+    values.update(overrides)
+    return DownloadSpec(**values)
+
+
+async def _download_daily(
+    directory: Path,
+    bars_client: FakeBarsClient,
+    progress: list[str] | None = None,
+    **spec_overrides: Any,
+) -> Any:
+    lines = progress if progress is not None else []
+    return await download_alpaca_bars(
+        directory,
+        _daily_spec(**spec_overrides),
+        market_data=None,
+        daily_market_data=_market_data(bars_client, DataFeed.SIP),
+        calendar=_calendar(_daily_calendar_days()),
+        progress=lines.append,
+    )
+
+
+async def test_daily_only_download_writes_a_daily_dataset_the_backtest_loads(
+    tmp_path: Path,
+) -> None:
+    progress: list[str] = []
+    result = await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()), progress)
+    assert set(_files(tmp_path)) == {
+        CALENDAR_FILE,
+        f"{BARS_DIR}/SPY_1Day.csv",
+        f"{BARS_DIR}/QQQ_1Day.csv",
+    }
+    data = load_backtest_data(tmp_path, feed=DataFeed.SIP)
+    assert [s.session_date for s in data.sessions] == DAILY_SESSIONS
+    assert data.sessions == result.sessions
+    early = next(s for s in data.sessions if s.session_date == DAILY_EARLY_CLOSE)
+    assert early.close_utc == datetime(2024, 12, 24, 18, 0, tzinfo=UTC)  # 13:00 EST
+    first, last = data.sessions[0], data.sessions[-1]
+    for symbol in SYMBOLS:
+        daily = await data.feed.get_daily_bars(symbol, DAILY_DAYS[0], DAILY_DAYS[-1])
+        # Exactly one bar per stored session, nothing before --start (no daily warm-up).
+        assert [b.bar_start_utc.date() for b in daily] == DAILY_SESSIONS
+        assert {(b.timeframe, b.feed) for b in daily} == {(Timeframe.DAY_1, DataFeed.SIP)}
+        assert await data.feed.get_minute_bars(symbol, first.open_utc, last.close_utc) == []
+    assert result.rows == {"SPY_1Day.csv": len(DAILY_SESSIONS), "QQQ_1Day.csv": len(DAILY_SESSIONS)}
+    assert result.daily_start == DAILY_START
+    assert result.downloaded_chunks == len(SYMBOLS) * 2  # years 2024 and 2025
+    assert f"SPY: no minute bars, {len(DAILY_SESSIONS)} daily bars" in progress
+
+
+async def test_daily_only_download_requests_no_minute_bars(tmp_path: Path) -> None:
+    client = FakeBarsClient(_daily_payloads())
+    await _download_daily(tmp_path, client)
+    assert client.requests
+    feeds = {(r.timeframe.value, str(r.feed.value) if r.feed else None) for r in client.requests}
+    assert feeds == {("1Day", "sip")}
+
+
+async def test_daily_only_download_refuses_a_minute_source(tmp_path: Path) -> None:
+    client = FakeBarsClient(_daily_payloads())
+    with pytest.raises(NonRetryableError) as info:
+        await download_alpaca_bars(
+            tmp_path,
+            _daily_spec(),
+            market_data=_market_data(client, DataFeed.SIP),
+            daily_market_data=_market_data(client, DataFeed.SIP),
+            calendar=_calendar(_daily_calendar_days()),
+            progress=lambda _line: None,
+        )
+    assert info.value.code == "INVALID_DOWNLOAD_SPEC"
+    assert client.requests == []
+    assert not (tmp_path / DOWNLOAD_CACHE_DIR).exists()
+
+
+async def test_minute_download_requires_a_minute_source(tmp_path: Path) -> None:
+    client = FakeBarsClient(_payloads())
+    with pytest.raises(NonRetryableError) as info:
+        await download_alpaca_bars(
+            tmp_path,
+            _spec(),
+            market_data=None,
+            daily_market_data=_market_data(client, DataFeed.SIP),
+            calendar=_calendar(_calendar_days()),
+            progress=lambda _line: None,
+        )
+    assert info.value.code == "INVALID_DOWNLOAD_SPEC"
+    assert client.requests == []
+
+
+async def test_daily_only_manifest_flags_the_dataset(tmp_path: Path) -> None:
+    await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()))
+    cache = json.loads((tmp_path / DOWNLOAD_CACHE_DIR / "manifest.json").read_text("utf-8"))
+    dataset = json.loads((tmp_path / "manifest.json").read_text("utf-8"))
+    assert cache == dataset
+    assert dataset == {
+        "version": 2,
+        "symbols": ["QQQ", "SPY"],
+        "start": "2024-12-16",
+        "end": "2025-01-15",
+        "feeds": {"1Day": "sip"},
+        "adjustment": "split",
+        "daily_warmup_days": 0,
+        "daily_only": True,
+    }
+
+
+async def test_interrupted_daily_only_download_resumes_from_completed_chunks(
+    tmp_path: Path,
+) -> None:
+    # SPY 2024 succeeds (one request), SPY 2025 fails permanently: the run aborts.
+    failing = FakeBarsClient(_daily_payloads(), failures=[None, api_error(403)])
+    with pytest.raises(NonRetryableError):
+        await _download_daily(tmp_path, failing)
+    done = tmp_path / DOWNLOAD_CACHE_DIR / "chunks" / "SPY" / "1Day" / "2024.csv"
+    assert done.is_file()
+    assert not (tmp_path / CALENDAR_FILE).exists()
+    assert not (tmp_path / "manifest.json").exists()
+
+    resumed = FakeBarsClient(_daily_payloads())
+    progress: list[str] = []
+    result = await _download_daily(tmp_path, resumed, progress)
+    assert "SPY 1Day 2024: cached" in progress
+    assert result.cached_chunks == 1
+    assert result.downloaded_chunks == len(SYMBOLS) * 2 - 1
+    requested = {(str(r.symbol_or_symbols), r.start) for r in resumed.requests}
+    assert ("SPY", datetime(2024, 12, 16, tzinfo=UTC).replace(tzinfo=None)) not in requested
+    assert {r.timeframe.value for r in resumed.requests} == {"1Day"}
+
+    fresh = tmp_path / "fresh"
+    await _download_daily(fresh, FakeBarsClient(_daily_payloads()))
+    assert _files(tmp_path) == _files(fresh)
+
+
+async def test_daily_only_resume_with_different_parameters_is_refused(tmp_path: Path) -> None:
+    await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()))
+    with pytest.raises(NonRetryableError) as info:
+        await _download_daily(
+            tmp_path, FakeBarsClient(_daily_payloads()), adjustment=BarAdjustment.ALL
+        )
+    assert info.value.code == "DOWNLOAD_MANIFEST_MISMATCH"
+
+
+async def test_daily_only_and_minute_downloads_never_share_a_directory(tmp_path: Path) -> None:
+    await _download(tmp_path / "minute", FakeBarsClient(_payloads()))
+    with pytest.raises(NonRetryableError) as info:
+        await _download_daily(tmp_path / "minute", FakeBarsClient(_daily_payloads()))
+    assert info.value.code == "DOWNLOAD_MANIFEST_MISMATCH"
+
+    await _download_daily(tmp_path / "daily", FakeBarsClient(_daily_payloads()))
+    with pytest.raises(NonRetryableError) as info:
+        await _download(tmp_path / "daily", FakeBarsClient(_payloads()))
+    assert info.value.code == "DOWNLOAD_MANIFEST_MISMATCH"
+
+
+async def test_loader_refuses_a_strategy_feed_other_than_the_daily_only_feed(
+    tmp_path: Path,
+) -> None:
+    await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()))
+    with pytest.raises(NonRetryableError) as info:
+        load_backtest_data(tmp_path, feed=DataFeed.IEX)
+    assert info.value.code == "DATASET_FEED_MISMATCH"
+
+
+async def test_loader_refuses_minute_files_in_a_daily_only_dataset(tmp_path: Path) -> None:
+    await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()))
+    stray = tmp_path / BARS_DIR / "SPY_1Min.csv"
+    stray.write_text("t,o,h,l,c,v\n2024-12-16T14:30:00Z,1,1,1,1,1\n", encoding="utf-8")
+    with pytest.raises(NonRetryableError) as info:
+        load_backtest_data(tmp_path, feed=DataFeed.SIP)
+    assert info.value.code == "INVALID_BAR_DATA"
+    assert "SPY_1Min.csv" in str(info.value)
+
+
+async def test_daily_only_dataset_without_manifest_uses_one_feed(tmp_path: Path) -> None:
+    await _download_daily(tmp_path, FakeBarsClient(_daily_payloads()))
+    (tmp_path / "manifest.json").unlink()
+    data = load_backtest_data(tmp_path, feed=DataFeed.IEX)
+    daily = await data.feed.get_daily_bars("SPY", DAILY_START, DAILY_END)
+    assert len(daily) == len(DAILY_SESSIONS)
+    assert {b.feed for b in daily} == {DataFeed.IEX}
 
 
 # --------------------------------------------------------------------------- CLI
@@ -383,3 +630,77 @@ def test_synthetic_cli_keeps_the_legacy_invocation(tmp_path: Path) -> None:
     sub = {p.name: p.read_bytes() for p in (tmp_path / "sub").rglob("*.csv")}
     assert legacy == sub
     assert len(legacy) == 3
+
+
+def _daily_cli_argv(out: Path, env: Path, *extra: str, feed: str = "sip") -> list[str]:
+    argv = ["download", "--symbols", *SYMBOLS]
+    argv += ["--start", DAILY_START.isoformat(), "--end", DAILY_END.isoformat()]
+    argv += ["--feed", feed, "--daily-feed", "sip", "--adjustment", "split", "--daily-only"]
+    return [*argv, "--out", str(out), "--env-file", str(env), *extra]
+
+
+def test_download_cli_requires_daily_warmup_days_without_daily_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    argv = ["download", "--symbols", "SPY", "--start", "2025-06-02", "--end", "2025-06-03"]
+    argv += ["--feed", "iex", "--daily-feed", "sip", "--adjustment", "split", "--out", "x"]
+    with pytest.raises(SystemExit) as info:
+        main(argv)
+    assert info.value.code == 2
+    assert "--daily-warmup-days" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("extra", "feed"),
+    [((), "iex"), (("--daily-warmup-days", "5"), "sip")],
+)
+def test_download_cli_daily_only_validates_before_any_network(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], extra: tuple[str, ...], feed: str
+) -> None:
+    out = tmp_path / "out"
+    assert main(_daily_cli_argv(out, tmp_path / "missing.env", *extra, feed=feed)) == 2
+    assert "INVALID_DOWNLOAD_SPEC" in capsys.readouterr().err
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("extra", [(), ("--daily-warmup-days", "0")])
+def test_download_cli_daily_only_builds_only_the_daily_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: tuple[str, ...]
+) -> None:
+    for name in ("APP_ENV", "ALPACA_API_KEY", "ALPACA_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    env = tmp_path / ".env"
+    env.write_text(
+        f"APP_ENV=paper\nALPACA_API_KEY={FAKE_KEY}\nALPACA_SECRET_KEY={FAKE_SECRET}\n",
+        encoding="utf-8",
+    )
+    client = FakeBarsClient(_daily_payloads())
+    built: list[DataFeed] = []
+
+    def fake_market_data(
+        _credentials: object,
+        *,
+        feed: DataFeed,
+        adjustment: BarAdjustment,
+        retry_policy: RetryPolicy | None = None,
+    ) -> AlpacaMarketData:
+        assert adjustment is BarAdjustment.SPLIT
+        built.append(feed)
+        return _market_data(client, feed)
+
+    def fake_calendar(
+        _credentials: object, *, retry_policy: RetryPolicy | None = None
+    ) -> AlpacaCalendar:
+        return _calendar(_daily_calendar_days())
+
+    monkeypatch.setattr(AlpacaMarketData, "from_credentials", fake_market_data)
+    monkeypatch.setattr(AlpacaCalendar, "from_credentials", fake_calendar)
+    out = tmp_path / "out"
+    assert main(_daily_cli_argv(out, env, *extra)) == 0
+    assert built == [DataFeed.SIP]  # no minute source is built
+    assert {r.timeframe.value for r in client.requests} == {"1Day"}
+    data = load_backtest_data(out, feed=DataFeed.SIP)
+    assert [s.session_date for s in data.sessions] == DAILY_SESSIONS
+    manifest = json.loads((out / "manifest.json").read_text("utf-8"))
+    assert manifest["daily_only"] is True
+    assert manifest["feeds"] == {"1Day": "sip"}
