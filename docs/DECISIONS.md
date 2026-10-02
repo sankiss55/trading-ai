@@ -187,6 +187,11 @@ and DSR >= 0.95 (0.78). The criteria were not changed after seeing the results.
 failed 3 development criteria. It is judged once with its pre-written lockbox rule (expectancy > 0,
 PF > 1.1, inside the development CI, max DD <= 15%). If it fails it is discarded permanently.
 
+**Lockbox result 2026-10-02: `mr_a1_ibs` FAILS and is discarded permanently.** 2023-01..2026-06, official
+run with halts: 302 trades, E[R] +0.006 (t 0.25), PF 1.04 (rule: > 1.1), CAGR 0.53%, Sharpe 0.13, max DD
+9.1%. The development edge did not hold out of sample (consistent with the published decay of
+short-term index mean reversion). Report: `research/results/lockbox_mr_a1_ibs_2026-10-02.txt`.
+
 **Owner decision 2026-10-02: build the paper-trading system (Phases 2-7) after the lockbox, whatever its
 result.** This deviates from sec. 55 (Phase 1 exit criterion not met): the goal of paper trading is
 to validate the system (orders, stops, recovery, reconciliation) with paper money only; any strategy

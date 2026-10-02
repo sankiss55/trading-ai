@@ -1,0 +1,227 @@
+{
+  "mode": "lockbox",
+  "banner": "LOCKBOX EVALUATION 2023-01..2026-06 — opened once for mr_a1_ibs (official run: halts enabled)",
+  "disclaimer": "Backtest results do not imply future profitability (sec. 45.4). Only the deterministic strategy is evaluated; the AI filter is not (sec. 45.1).",
+  "protocol": {
+    "protocol_version": "1.0.0",
+    "dev_window": {
+      "start": "2016-11-01",
+      "end": "2022-12-31"
+    },
+    "lockbox_window": {
+      "start": "2023-01-01",
+      "end": "2026-06-30"
+    },
+    "embargo_start": "2026-07-01",
+    "trial_budget": 12,
+    "v1_trials": 1,
+    "costs": {
+      "base_bps_per_side": "5",
+      "stress_multipliers": [
+        "2",
+        "3"
+      ]
+    },
+    "gate_sample": "continuous_walk_forward_span",
+    "walk_forward": {
+      "train_months": 12,
+      "test_months": 3
+    },
+    "bootstrap": {
+      "resamples": 10000,
+      "confidence": 0.95,
+      "seed": 20261002
+    },
+    "monte_carlo": {
+      "sims": 10000,
+      "mean_block_length": 10.0,
+      "seed": 20261003
+    },
+    "random_entry": {
+      "sims": 1000,
+      "seed": 20261004
+    },
+    "pbo": {
+      "blocks": 16
+    }
+  },
+  "hypothesis_id": "mr_a1_ibs",
+  "family": "MR-A (IBS)",
+  "title": "IBS mean reversion on index ETFs, no trend filter",
+  "config_hash": "7ab03ff0b9439dd41afa239843913d69870f9f56f1b0ee698ee7ccc248a109b9",
+  "strategy_version": "2.0.0-mr_a1_ibs",
+  "data_fingerprint": "d44c82cd45d2d85323370ba19312e313c4274ff00d98a5b603e6ac6eb58bde72",
+  "starting_cash": "100000",
+  "git_commit": "0a14dae5e1b26384901f508e72aa69fa394d86b2",
+  "git_dirty": false,
+  "created_at_utc": "2026-10-02T21:40:28.853406Z",
+  "dev_trial_id": "mr_a1_ibs-dev-20261002T213313Z-7ab03ff0b943",
+  "dev_data_fingerprint": "d44c82cd45d2d85323370ba19312e313c4274ff00d98a5b603e6ac6eb58bde72",
+  "dev_expectancy_ci": [
+    -0.004429263157894736,
+    0.08827738095238095
+  ],
+  "dev_gate_passed": false,
+  "official": {
+    "label": "lockbox_official",
+    "halts": "enabled",
+    "window": {
+      "start": "2023-01-01",
+      "end": "2026-06-30"
+    },
+    "slippage_multiplier": "1",
+    "cost_bps_per_side": "5",
+    "sessions": 875,
+    "performance": {
+      "n_periods": 875,
+      "total_return": 0.018697014000001788,
+      "cagr": 0.00534927610426883,
+      "annualized_volatility": 0.05391226039327801,
+      "sharpe": 0.1258708351694011,
+      "sortino": 0.18115688950504502,
+      "max_drawdown": 0.09128823552893306,
+      "calmar": 0.05859765032454177,
+      "exposure": 0.512,
+      "exposure_adjusted_return": 0.010447804891150058
+    },
+    "moments": {
+      "n": 875,
+      "mean": 0.00002692849699036558,
+      "sd": 0.003396153181380259,
+      "sharpe": 0.00792911731367233,
+      "skewness": 0.21982506138836855,
+      "kurtosis": 7.852102541638508
+    },
+    "psr": 0.5927420615007628,
+    "trades": {
+      "trades": 302,
+      "r_trades": 302,
+      "expectancy_r": 0.006094701986754967,
+      "sd_r": 0.43067705590554245,
+      "t_stat": 0.2459258667143872,
+      "p_value": 0.4029536145168162,
+      "ci_low": -0.04267455179346864,
+      "ci_high": 0.054863955766978584,
+      "win_rate": 0.5562913907284768,
+      "profit_factor": 1.0422362396192975,
+      "net_pnl": 1869.7014
+    },
+    "open_trades_at_end": 0,
+    "halt_rejections": {
+      "DAILY_LOSS_LIMIT": 0,
+      "WEEKLY_LOSS_LIMIT": 0,
+      "MAX_DRAWDOWN": 0
+    }
+  },
+  "statistics": {
+    "label": "lockbox_statistics",
+    "halts": "disabled",
+    "window": {
+      "start": "2023-01-01",
+      "end": "2026-06-30"
+    },
+    "slippage_multiplier": "1",
+    "cost_bps_per_side": "5",
+    "sessions": 875,
+    "performance": {
+      "n_periods": 875,
+      "total_return": 0.018697014000001788,
+      "cagr": 0.00534927610426883,
+      "annualized_volatility": 0.05391226039327801,
+      "sharpe": 0.1258708351694011,
+      "sortino": 0.18115688950504502,
+      "max_drawdown": 0.09128823552893306,
+      "calmar": 0.05859765032454177,
+      "exposure": 0.512,
+      "exposure_adjusted_return": 0.010447804891150058
+    },
+    "moments": {
+      "n": 875,
+      "mean": 0.00002692849699036558,
+      "sd": 0.003396153181380259,
+      "sharpe": 0.00792911731367233,
+      "skewness": 0.21982506138836855,
+      "kurtosis": 7.852102541638508
+    },
+    "psr": 0.5927420615007628,
+    "trades": {
+      "trades": 302,
+      "r_trades": 302,
+      "expectancy_r": 0.006094701986754967,
+      "sd_r": 0.43067705590554245,
+      "t_stat": 0.2459258667143872,
+      "p_value": 0.4029536145168162,
+      "ci_low": -0.04267455179346864,
+      "ci_high": 0.054863955766978584,
+      "win_rate": 0.5562913907284768,
+      "profit_factor": 1.0422362396192975,
+      "net_pnl": 1869.7014
+    },
+    "open_trades_at_end": 0,
+    "halt_rejections": {
+      "DAILY_LOSS_LIMIT": 0,
+      "WEEKLY_LOSS_LIMIT": 0,
+      "MAX_DRAWDOWN": 0
+    }
+  },
+  "metrics": {
+    "expectancy_r": 0.006094701986754967,
+    "profit_factor": 1.0422362396192975,
+    "max_drawdown": 0.09128823552893306,
+    "expectancy_r_inside_dev_bootstrap_ci": true,
+    "trades": 302,
+    "t_stat": 0.2459258667143872,
+    "sharpe": 0.1258708351694011,
+    "cagr": 0.00534927610426883,
+    "stats_trades": 302,
+    "stats_expectancy_r": 0.006094701986754967,
+    "stats_profit_factor": 1.0422362396192975,
+    "stats_max_drawdown": 0.09128823552893306,
+    "stats_sharpe": 0.1258708351694011,
+    "stats_cagr": 0.00534927610426883,
+    "gate_passed": false
+  },
+  "gate": {
+    "stage": "lockbox",
+    "passed": false,
+    "rows": [
+      {
+        "name": "expectancy_r",
+        "op": ">",
+        "threshold": 0.0,
+        "value": 0.006094701986754967,
+        "passed": true,
+        "alternatives": []
+      },
+      {
+        "name": "profit_factor",
+        "op": ">",
+        "threshold": 1.1,
+        "value": 1.0422362396192975,
+        "passed": false,
+        "alternatives": []
+      },
+      {
+        "name": "expectancy_r_inside_dev_bootstrap_ci",
+        "op": "==",
+        "threshold": true,
+        "value": true,
+        "passed": true,
+        "alternatives": []
+      },
+      {
+        "name": "max_drawdown",
+        "op": "<=",
+        "threshold": 0.15,
+        "value": 0.09128823552893306,
+        "passed": true,
+        "alternatives": []
+      }
+    ]
+  },
+  "trial_id": "mr_a1_ibs-lockbox-20261002T214028Z-7ab03ff0b943",
+  "notes": [
+    "The pass rule is evaluated on the official run (loss-limit halts enabled); the statistics run (halts disabled for research statistics) is informative.",
+    "Expectancy inside the dev CI: the official lockbox expectancy lies in the dev trial's block-bootstrap expectancy interval."
+  ]
+}

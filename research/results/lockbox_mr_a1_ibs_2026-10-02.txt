@@ -1,0 +1,20 @@
+LOCKBOX EVALUATION 2023-01..2026-06 — opened once for mr_a1_ibs (official run: halts enabled)
+[mr_a1_ibs] MR-A (IBS): IBS mean reversion on index ETFs, no trend filter
+strategy 2.0.0-mr_a1_ibs, config sha256 7ab03ff0b943, data d44c82cd45d2, git 0a14dae5e1b2, trial mr_a1_ibs-lockbox-20261002T214028Z-7ab03ff0b943
+dev trial mr_a1_ibs-dev-20261002T213313Z-7ab03ff0b943: gate passed false, bootstrap E[R] CI [-0.0044, 0.0883]
+official run (halts enabled): 2023-01-01..2026-06-30 (875 sessions, 5 bps/side): return 1.87%, CAGR 0.53%, Sharpe 0.126, Sortino 0.181, max DD 9.13%, exposure 51.20%, PSR 0.5927
+  trades 302 (R 302), E[R] 0.0061, t 0.25, p 0.4030, 95% t-CI [-0.0427, 0.0549], PF 1.042, win rate 55.63%, net P&L 1869.70; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+statistics run (halts disabled for research statistics): 2023-01-01..2026-06-30 (875 sessions, 5 bps/side): return 1.87%, CAGR 0.53%, Sharpe 0.126, Sortino 0.181, max DD 9.13%, exposure 51.20%, PSR 0.5927
+  trades 302 (R 302), E[R] 0.0061, t 0.25, p 0.4030, 95% t-CI [-0.0427, 0.0549], PF 1.042, win rate 55.63%, net P&L 1869.70
+gate (pass_rule.lockbox):
+  expectancy_r > 0.0000: value 0.0061 -> PASS
+  profit_factor > 1.1000: value 1.0422 -> FAIL
+  expectancy_r_inside_dev_bootstrap_ci == true: value true -> PASS
+  max_drawdown <= 0.1500: value 0.0913 -> PASS
+  overall -> FAIL
+
+The pass rule is evaluated on the official run (loss-limit halts enabled); the statistics run (halts disabled for research statistics) is informative.
+Expectancy inside the dev CI: the official lockbox expectancy lies in the dev trial's block-bootstrap expectancy interval.
+Backtest results do not imply future profitability (sec. 45.4). Only the deterministic strategy is evaluated; the AI filter is not (sec. 45.1).
+
+LOCKBOX EVALUATION 2023-01..2026-06 — opened once for mr_a1_ibs (official run: halts enabled)
