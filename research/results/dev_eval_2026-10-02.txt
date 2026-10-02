@@ -1,0 +1,354 @@
+DEVELOPMENT EVALUATION 2016-11..2022-12 — lockbox untouched
+Research statistics: halts disabled for research statistics (exposure and position limits kept).
+protocol 1.0.0, data d44c82cd45d2, cash 100000 per account, git 204964ef5438 (clean), created 2026-10-02T21:33:13Z
+trials N = 8 of budget 12 (registry incl. this batch, v1 counted); DSR trial variance V = 0.00031170 (sample variance (ddof 1) of the 7 per-session Sharpe ratios of this batch; per-session (daily) Sharpe ratios: mean / sd of session-close returns, not annualised)
+PBO (CSCV, 16 blocks) across the batch: 0.4643; MR-A (IBS): 0.3776; MR-B (Connors RSI(2)): 0.6577; TF (trend baseline): 0.4323
+per-trade gate sample: continuous_walk_forward_span
+
+Gate summary (pass_rule.dev):
+  mr_a1_ibs            FAIL  gate trades 494, E[R] 0.0428, t 2.16, PF 1.290, DSR 0.775; failed: expectancy_r, bootstrap_expectancy_ci_low, deflated_sharpe_ratio
+  mr_a2_ibs_sma200     FAIL  gate trades 309, E[R] 0.0425, t 1.60, PF 1.263, DSR 0.681; failed: expectancy_r, t_stat, bootstrap_expectancy_ci_low, deflated_sharpe_ratio
+  mr_b1_rsi2_lt5       FAIL  gate trades 71, E[R] 0.0352, t 0.42, PF 1.079, DSR 0.280; failed: expectancy_r, t_stat, bootstrap_expectancy_ci_low, profit_factor, deflated_sharpe_ratio, random_entry_percentile, vs_buy_and_hold
+  mr_b2_rsi2_lt10      FAIL  gate trades 112, E[R] -0.0016, t -0.03, PF 0.884, DSR 0.213; failed: expectancy_r, t_stat, bootstrap_expectancy_ci_low, profit_factor, mc_max_drawdown_p95, deflated_sharpe_ratio, random_entry_percentile, vs_buy_and_hold
+  mr_b3_rsi2_lt15      FAIL  gate trades 161, E[R] 0.0247, t 0.50, PF 1.049, DSR 0.410; failed: expectancy_r, t_stat, bootstrap_expectancy_ci_low, profit_factor, deflated_sharpe_ratio, random_entry_percentile, vs_buy_and_hold
+  tf_t1_sma200         FAIL  gate trades 58, E[R] 0.1086, t 0.57, PF 1.423, DSR 0.723; failed: t_stat, bootstrap_expectancy_ci_low, mc_max_drawdown_p95, deflated_sharpe_ratio, random_entry_percentile
+  tf_t2_sma210         FAIL  gate trades 47, E[R] 0.1398, t 0.58, PF 1.487, DSR 0.820; failed: t_stat, bootstrap_expectancy_ci_low, mc_max_drawdown_p95, deflated_sharpe_ratio, random_entry_percentile
+
+[mr_a1_ibs] MR-A (IBS): IBS mean reversion on index ETFs, no trend filter
+  strategy 2.0.0-mr_a1_ibs, config sha256 7ab03ff0b943, trial mr_a1_ibs-dev-20261002T213313Z-7ab03ff0b943
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 27.13%, CAGR 3.97%, Sharpe 0.714, Sortino 1.046, max DD 7.59%, exposure 49.36%, PSR 0.9614
+    trades 557 (R 557), E[R] 0.0472, t 2.50, p 0.0063, 95% t-CI [0.0102, 0.0842], PF 1.328, win rate 63.02%, net P&L 27131.20; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 7.59%, p50 8.10%, p95 14.46%; P(DD >= 10.00% owner halt) 0.2684; P(DD >= 15.00%) 0.0402
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 476 (R 476), E[R] 0.0366, t 1.83, p 0.0336, 95% t-CI [-0.0026, 0.0758], PF 1.236, win rate 62.61%, net P&L 15142.60
+    block bootstrap (ISO weeks, 200 blocks, 10000 resamples): E[R] CI [-0.0095, 0.0826], P(E <= 0) 0.0615, PF CI [0.918, 1.735]
+    trades open at a window end (not counted): 20
+    windows: 2017-11-01..2018-01-31 16 tr E 0.253; 2018-02-01..2018-04-30 26 tr E -0.136; 2018-05-01..2018-07-31 18 tr E 0.022; 2018-08-01..2018-10-31 24 tr E 0.006; 2018-11-01..2019-01-31 21 tr E 0.027; 2019-02-01..2019-04-30 16 tr E 0.057; 2019-05-01..2019-07-31 23 tr E 0.132; 2019-08-01..2019-10-31 24 tr E 0.011; 2019-11-01..2020-01-31 13 tr E 0.134; 2020-02-01..2020-04-30 27 tr E 0.035; 2020-05-01..2020-07-31 31 tr E 0.086; 2020-08-01..2020-10-31 25 tr E 0.145; 2020-11-01..2021-01-31 18 tr E 0.163; 2021-02-01..2021-04-30 19 tr E 0.055; 2021-05-01..2021-07-31 20 tr E -0.047; 2021-08-01..2021-10-31 25 tr E 0.041; 2021-11-01..2022-01-31 28 tr E -0.049; 2022-02-01..2022-04-30 32 tr E 0.010; 2022-05-01..2022-07-31 20 tr E -0.144; 2022-08-01..2022-10-31 31 tr E -0.006; 2022-11-01..2022-12-31 19 tr E 0.140
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 494 (R 494), E[R] 0.0428, t 2.16, p 0.0156, 95% t-CI [0.0039, 0.0818], PF 1.290, win rate 63.56%, net P&L 22042.97
+    block bootstrap (ISO weeks, 206 blocks, 10000 resamples): E[R] CI [-0.0044, 0.0883], P(E <= 0) 0.0376, PF CI [0.952, 1.803]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.0472, PF 1.328, return 27.13%
+    x2 (10 bps): E[R] 0.0250, PF 1.168, return 13.83%
+    x3 (15 bps): E[R] 0.0015, PF 1.010, return 0.85%
+    break-even cost: 15.32 bps per side (extrapolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 557 trades): real mean return 0.32% vs p5/p50/p95 -0.11%/0.03%/0.15% -> percentile 100.0
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 14 tr E 0.240 PF 5.37; 2017 58 tr E 0.067 PF 1.58; 2018 100 tr E -0.022 PF 0.82; 2019 75 tr E 0.075 PF 1.68; 2020 108 tr E 0.138 PF 2.33; 2021 86 tr E 0.029 PF 1.26; 2022 116 tr E -0.015 PF 0.97
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 198 tr E 0.030 PF 1.16; QQQ 183 tr E 0.089 PF 1.69; SPY 176 tr E 0.024 PF 1.20
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 393 tr E 0.044 PF 1.31; below 164 tr E 0.054 PF 1.39
+  deflated Sharpe (per-session): SR 0.0450, SR0 0.0258, N 8, DSR 0.7751
+  multiple testing: p 0.0156, Holm 0.1092, BHY 0.2832
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.0428 -> FAIL
+    t_stat >= 2.0000: value 2.1606 -> PASS
+    bootstrap_expectancy_ci_low > 0.0000: value -0.0044 -> FAIL
+    profit_factor >= 1.2000: value 1.2904 -> PASS
+    mc_max_drawdown_p95 <= 0.1500: value 0.1446 -> PASS
+    deflated_sharpe_ratio >= 0.9500: value 0.7751 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 100.0000 -> PASS
+    expectancy_r_at_2x_cost > 0.0000: value 0.0250 -> PASS
+    vs_buy_and_hold (any of) -> PASS
+      alternative 1 -> PASS
+        sharpe_minus_bh_sharpe >= 0.0000: value 0.1446 -> PASS
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.2262 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.3811 -> FAIL
+    overall -> FAIL
+
+[mr_a2_ibs_sma200] MR-A (IBS): IBS mean reversion on index ETFs above the 200-day SMA
+  strategy 2.0.0-mr_a2_ibs_sma200, config sha256 a9bcd7861bfc, trial mr_a2_ibs_sma200-dev-20261002T213313Z-a9bcd7861bfc
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 17.63%, CAGR 2.67%, Sharpe 0.602, Sortino 0.843, max DD 6.77%, exposure 37.63%, PSR 0.9295
+    trades 372 (R 372), E[R] 0.0491, t 2.02, p 0.0221, 95% t-CI [0.0013, 0.0969], PF 1.323, win rate 62.37%, net P&L 17625.24; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 6.77%, p50 7.22%, p95 13.33%; P(DD >= 10.00% owner halt) 0.1838; P(DD >= 15.00%) 0.0228
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 297 (R 297), E[R] 0.0347, t 1.31, p 0.0958, 95% t-CI [-0.0175, 0.0868], PF 1.193, win rate 62.29%, net P&L 8047.20
+    block bootstrap (ISO weeks, 147 blocks, 10000 resamples): E[R] CI [-0.0259, 0.0922], P(E <= 0) 0.1245, PF CI [0.825, 1.833]
+    trades open at a window end (not counted): 14
+    windows: 2017-11-01..2018-01-31 16 tr E 0.253; 2018-02-01..2018-04-30 26 tr E -0.136; 2018-05-01..2018-07-31 18 tr E 0.022; 2018-08-01..2018-10-31 19 tr E 0.011; 2018-11-01..2019-01-31 0 tr E n/a; 2019-02-01..2019-04-30 11 tr E 0.083; 2019-05-01..2019-07-31 18 tr E 0.096; 2019-08-01..2019-10-31 21 tr E -0.008; 2019-11-01..2020-01-31 13 tr E 0.134; 2020-02-01..2020-04-30 7 tr E -0.196; 2020-05-01..2020-07-31 18 tr E 0.036; 2020-08-01..2020-10-31 24 tr E 0.134; 2020-11-01..2021-01-31 18 tr E 0.163; 2021-02-01..2021-04-30 19 tr E 0.055; 2021-05-01..2021-07-31 20 tr E -0.047; 2021-08-01..2021-10-31 25 tr E 0.041; 2021-11-01..2022-01-31 21 tr E -0.065; 2022-02-01..2022-04-30 3 tr E -0.077; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 0 tr E n/a; 2022-11-01..2022-12-31 0 tr E n/a
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 309 (R 309), E[R] 0.0425, t 1.60, p 0.0555, 95% t-CI [-0.0098, 0.0949], PF 1.263, win rate 63.11%, net P&L 12537.00
+    block bootstrap (ISO weeks, 151 blocks, 10000 resamples): E[R] CI [-0.0188, 0.1005], P(E <= 0) 0.0849, PF CI [0.872, 1.933]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.0491, PF 1.323, return 17.63%
+    x2 (10 bps): E[R] 0.0209, PF 1.128, return 7.14%
+    x3 (15 bps): E[R] -0.0068, PF 0.956, return -2.51%
+    break-even cost: 13.77 bps per side (interpolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 372 trades): real mean return 0.24% vs p5/p50/p95 -0.15%/0.02%/0.19% -> percentile 98.1
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 14 tr E 0.240 PF 5.37; 2017 58 tr E 0.067 PF 1.58; 2018 76 tr E -0.031 PF 0.79; 2019 57 tr E 0.051 PF 1.41; 2020 74 tr E 0.140 PF 2.43; 2021 84 tr E 0.036 PF 1.31; 2022 9 tr E -0.320 PF 0.09
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 114 tr E 0.020 PF 1.05; QQQ 131 tr E 0.124 PF 2.12; SPY 127 tr E -0.003 PF 1.01
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 361 tr E 0.045 PF 1.30; below 11 tr E 0.189 PF 4.41
+  deflated Sharpe (per-session): SR 0.0379, SR0 0.0258, N 8, DSR 0.6813
+  multiple testing: p 0.0555, Holm 0.3332, BHY 0.5039
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.0425 -> FAIL
+    t_stat >= 2.0000: value 1.5981 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.0188 -> FAIL
+    profit_factor >= 1.2000: value 1.2629 -> PASS
+    mc_max_drawdown_p95 <= 0.1500: value 0.1333 -> PASS
+    deflated_sharpe_ratio >= 0.9500: value 0.6813 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 98.1000 -> PASS
+    expectancy_r_at_2x_cost > 0.0000: value 0.0209 -> PASS
+    vs_buy_and_hold (any of) -> PASS
+      alternative 1 -> PASS
+        sharpe_minus_bh_sharpe >= 0.0000: value 0.0317 -> PASS
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.2018 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.2561 -> FAIL
+    overall -> FAIL
+
+[mr_b1_rsi2_lt5] MR-B (Connors RSI(2)): Connors RSI(2) < 5 pullback above the 200-day SMA
+  strategy 2.0.0-mr_b1_rsi2_lt5, config sha256 e52e5c7e7bac, trial mr_b1_rsi2_lt5-dev-20261002T213313Z-e52e5c7e7bac
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 3.03%, CAGR 0.49%, Sharpe 0.172, Sortino 0.237, max DD 8.23%, exposure 9.54%, PSR 0.6642
+    trades 84 (R 84), E[R] 0.0542, t 0.75, p 0.2288, 95% t-CI [-0.0902, 0.1986], PF 1.175, win rate 69.05%, net P&L 3028.85; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 8.23%, p50 6.09%, p95 12.07%; P(DD >= 10.00% owner halt) 0.1157; P(DD >= 15.00%) 0.0110
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 67 (R 67), E[R] -0.0027, t -0.03, p 0.5125, 95% t-CI [-0.1769, 0.1714], PF 0.954, win rate 65.67%, net P&L -769.26
+    block bootstrap (ISO weeks, 39 blocks, 10000 resamples): E[R] CI [-0.1661, 0.1678], P(E <= 0) 0.5042, PF CI [0.525, 2.177]
+    trades open at a window end (not counted): 4
+    windows: 2017-11-01..2018-01-31 3 tr E 0.159; 2018-02-01..2018-04-30 10 tr E -0.361; 2018-05-01..2018-07-31 2 tr E -0.075; 2018-08-01..2018-10-31 7 tr E -0.130; 2018-11-01..2019-01-31 0 tr E n/a; 2019-02-01..2019-04-30 1 tr E 0.975; 2019-05-01..2019-07-31 2 tr E 0.167; 2019-08-01..2019-10-31 7 tr E -0.247; 2019-11-01..2020-01-31 1 tr E 0.169; 2020-02-01..2020-04-30 5 tr E -0.295; 2020-05-01..2020-07-31 0 tr E n/a; 2020-08-01..2020-10-31 4 tr E 0.134; 2020-11-01..2021-01-31 0 tr E n/a; 2021-02-01..2021-04-30 4 tr E 0.472; 2021-05-01..2021-07-31 10 tr E 0.411; 2021-08-01..2021-10-31 7 tr E 0.010; 2021-11-01..2022-01-31 4 tr E -0.216; 2022-02-01..2022-04-30 0 tr E n/a; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 0 tr E n/a; 2022-11-01..2022-12-31 0 tr E n/a
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 71 (R 71), E[R] 0.0352, t 0.42, p 0.3397, 95% t-CI [-0.1338, 0.2041], PF 1.079, win rate 67.61%, net P&L 1318.76
+    block bootstrap (ISO weeks, 41 blocks, 10000 resamples): E[R] CI [-0.1310, 0.2034], P(E <= 0) 0.3325, PF CI [0.593, 2.467]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.0542, PF 1.175, return 3.03%
+    x2 (10 bps): E[R] 0.0260, PF 1.048, return 0.86%
+    x3 (15 bps): E[R] -0.0014, PF 0.933, return -1.24%
+    break-even cost: 14.75 bps per side (interpolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 84 trades): real mean return 0.31% vs p5/p50/p95 -0.36%/0.03%/0.39% -> percentile 88.6
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 4 tr E 0.259 PF inf; 2017 12 tr E 0.125 PF 2.94; 2018 19 tr E -0.246 PF 0.47; 2019 10 tr E -0.042 PF 1.09; 2020 13 tr E 0.124 PF 0.98; 2021 23 tr E 0.233 PF 3.45; 2022 3 tr E 0.048 PF 0.79
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 24 tr E 0.043 PF 0.95; QQQ 29 tr E 0.131 PF 1.61; SPY 31 tr E -0.009 PF 1.05
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 81 tr E 0.022 PF 1.09; below 3 tr E 0.936 PF 18.25
+  deflated Sharpe (per-session): SR 0.0109, SR0 0.0258, N 8, DSR 0.2805
+  multiple testing: p 0.3397, Holm 1.0000, BHY 1.0000
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.0352 -> FAIL
+    t_stat >= 2.0000: value 0.4150 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.1310 -> FAIL
+    profit_factor >= 1.2000: value 1.0789 -> FAIL
+    mc_max_drawdown_p95 <= 0.1500: value 0.1207 -> PASS
+    deflated_sharpe_ratio >= 0.9500: value 0.2805 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 88.6000 -> FAIL
+    expectancy_r_at_2x_cost > 0.0000: value 0.0260 -> PASS
+    vs_buy_and_hold (any of) -> FAIL
+      alternative 1 -> FAIL
+        sharpe_minus_bh_sharpe >= 0.0000: value -0.3974 -> FAIL
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.2452 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.0466 -> FAIL
+    overall -> FAIL
+
+[mr_b2_rsi2_lt10] MR-B (Connors RSI(2)): Connors RSI(2) < 10 pullback above the 200-day SMA
+  strategy 2.0.0-mr_b2_rsi2_lt10, config sha256 548f2b22fc31, trial mr_b2_rsi2_lt10-dev-20261002T213313Z-548f2b22fc31
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 1.61%, CAGR 0.26%, Sharpe 0.087, Sortino 0.118, max DD 10.92%, exposure 16.69%, PSR 0.5852
+    trades 141 (R 140), E[R] 0.0361, t 0.71, p 0.2395, 95% t-CI [-0.0645, 0.1367], PF 1.060, win rate 64.54%, net P&L 1608.14; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 10.92%, p50 8.06%, p95 16.15%; P(DD >= 10.00% owner halt) 0.3114; P(DD >= 15.00%) 0.0737
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 106 (R 105), E[R] -0.0240, t -0.38, p 0.6477, 95% t-CI [-0.1494, 0.1013], PF 0.837, win rate 59.43%, net P&L -3899.33
+    block bootstrap (ISO weeks, 57 blocks, 10000 resamples): E[R] CI [-0.1741, 0.1250], P(E <= 0) 0.6066, PF CI [0.483, 1.701]
+    trades open at a window end (not counted): 9
+    windows: 2017-11-01..2018-01-31 5 tr E 0.283; 2018-02-01..2018-04-30 13 tr E -0.431; 2018-05-01..2018-07-31 4 tr E -0.286; 2018-08-01..2018-10-31 10 tr E -0.235; 2018-11-01..2019-01-31 0 tr E n/a; 2019-02-01..2019-04-30 1 tr E 0.259; 2019-05-01..2019-07-31 7 tr E -0.044; 2019-08-01..2019-10-31 10 tr E -0.114; 2019-11-01..2020-01-31 4 tr E 0.214; 2020-02-01..2020-04-30 6 tr E -0.295; 2020-05-01..2020-07-31 0 tr E n/a; 2020-08-01..2020-10-31 9 tr E 0.160; 2020-11-01..2021-01-31 2 tr E 0.259; 2021-02-01..2021-04-30 6 tr E 0.052; 2021-05-01..2021-07-31 10 tr E 0.546; 2021-08-01..2021-10-31 10 tr E 0.163; 2021-11-01..2022-01-31 9 tr E -0.265; 2022-02-01..2022-04-30 0 tr E n/a; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 0 tr E n/a; 2022-11-01..2022-12-31 0 tr E n/a
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 112 (R 111), E[R] -0.0016, t -0.03, p 0.5105, 95% t-CI [-0.1238, 0.1205], PF 0.884, win rate 61.61%, net P&L -2907.04
+    block bootstrap (ISO weeks, 61 blocks, 10000 resamples): E[R] CI [-0.1381, 0.1347], P(E <= 0) 0.4971, PF CI [0.520, 1.737]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.0361, PF 1.060, return 1.61%
+    x2 (10 bps): E[R] 0.0143, PF 0.949, return -1.38%
+    x3 (15 bps): E[R] -0.0142, PF 0.824, return -4.94%
+    break-even cost: 12.51 bps per side (interpolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 141 trades): real mean return 0.12% vs p5/p50/p95 -0.28%/0.05%/0.37% -> percentile 65.0
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 5 tr E 0.301 PF inf; 2017 29 tr E 0.177 PF 3.48; 2018 28 tr E -0.307 PF 0.33; 2019 20 tr E -0.048 PF 0.82; 2020 22 tr E 0.116 PF 1.17; 2021 33 tr E 0.222 PF 3.24; 2022 4 tr E -0.451 PF 0.18
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 40 tr E 0.039 PF 0.99; QQQ 52 tr E 0.047 PF 1.14; SPY 49 tr E 0.022 PF 1.03
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 138 tr E 0.016 PF 1.00; below 3 tr E 0.936 PF 17.84
+  deflated Sharpe (per-session): SR 0.0055, SR0 0.0258, N 8, DSR 0.2131
+  multiple testing: p 0.5105, Holm 1.0000, BHY 1.0000
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value -0.0016 -> FAIL
+    t_stat >= 2.0000: value -0.0264 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.1381 -> FAIL
+    profit_factor >= 1.2000: value 0.8844 -> FAIL
+    mc_max_drawdown_p95 <= 0.1500: value 0.1615 -> FAIL
+    deflated_sharpe_ratio >= 0.9500: value 0.2131 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 65.0000 -> FAIL
+    expectancy_r_at_2x_cost > 0.0000: value 0.0143 -> PASS
+    vs_buy_and_hold (any of) -> FAIL
+      alternative 1 -> FAIL
+        sharpe_minus_bh_sharpe >= 0.0000: value -0.4828 -> FAIL
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.3256 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.0249 -> FAIL
+    overall -> FAIL
+
+[mr_b3_rsi2_lt15] MR-B (Connors RSI(2)): Connors RSI(2) < 15 pullback above the 200-day SMA
+  strategy 2.0.0-mr_b3_rsi2_lt15, config sha256 1723bba1a594, trial mr_b3_rsi2_lt15-dev-20261002T213313Z-1723bba1a594
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 8.16%, CAGR 1.28%, Sharpe 0.316, Sortino 0.436, max DD 8.91%, exposure 22.81%, PSR 0.7810
+    trades 205 (R 204), E[R] 0.0568, t 1.40, p 0.0808, 95% t-CI [-0.0229, 0.1364], PF 1.240, win rate 68.78%, net P&L 8160.11; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 8.91%, p50 7.60%, p95 14.80%; P(DD >= 10.00% owner halt) 0.2442; P(DD >= 15.00%) 0.0457
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 150 (R 149), E[R] 0.0049, t 0.09, p 0.4627, 95% t-CI [-0.0977, 0.1074], PF 0.980, win rate 64.00%, net P&L -568.74
+    block bootstrap (ISO weeks, 79 blocks, 10000 resamples): E[R] CI [-0.1228, 0.1296], P(E <= 0) 0.4629, PF CI [0.591, 1.817]
+    trades open at a window end (not counted): 15
+    windows: 2017-11-01..2018-01-31 6 tr E 0.187; 2018-02-01..2018-04-30 16 tr E -0.319; 2018-05-01..2018-07-31 7 tr E -0.122; 2018-08-01..2018-10-31 13 tr E -0.212; 2018-11-01..2019-01-31 0 tr E n/a; 2019-02-01..2019-04-30 1 tr E 0.259; 2019-05-01..2019-07-31 13 tr E -0.091; 2019-08-01..2019-10-31 12 tr E -0.022; 2019-11-01..2020-01-31 9 tr E 0.519; 2020-02-01..2020-04-30 8 tr E -0.339; 2020-05-01..2020-07-31 2 tr E 0.152; 2020-08-01..2020-10-31 10 tr E 0.288; 2020-11-01..2021-01-31 5 tr E 0.391; 2021-02-01..2021-04-30 11 tr E 0.087; 2021-05-01..2021-07-31 12 tr E 0.370; 2021-08-01..2021-10-31 13 tr E -0.092; 2021-11-01..2022-01-31 12 tr E -0.179; 2022-02-01..2022-04-30 0 tr E n/a; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 0 tr E n/a; 2022-11-01..2022-12-31 0 tr E n/a
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 161 (R 160), E[R] 0.0247, t 0.50, p 0.3092, 95% t-CI [-0.0731, 0.1226], PF 1.049, win rate 65.84%, net P&L 1567.93
+    block bootstrap (ISO weeks, 84 blocks, 10000 resamples): E[R] CI [-0.0962, 0.1440], P(E <= 0) 0.3394, PF CI [0.642, 1.884]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.0568, PF 1.240, return 8.16%
+    x2 (10 bps): E[R] 0.0302, PF 1.095, return 3.26%
+    x3 (15 bps): E[R] -0.0002, PF 0.942, return -2.03%
+    break-even cost: 14.97 bps per side (interpolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 205 trades): real mean return 0.23% vs p5/p50/p95 -0.22%/0.04%/0.29% -> percentile 89.5
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 8 tr E 0.208 PF inf; 2017 42 tr E 0.169 PF 3.82; 2018 40 tr E -0.187 PF 0.49; 2019 33 tr E 0.017 PF 1.12; 2020 29 tr E 0.228 PF 1.68; 2021 49 tr E 0.107 PF 1.89; 2022 4 tr E -0.464 PF 0.18
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 61 tr E 0.035 PF 1.07; QQQ 72 tr E 0.055 PF 1.26; SPY 72 tr E 0.077 PF 1.39
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 202 tr E 0.042 PF 1.18; below 3 tr E 1.043 PF inf
+  deflated Sharpe (per-session): SR 0.0199, SR0 0.0258, N 8, DSR 0.4100
+  multiple testing: p 0.3092, Holm 1.0000, BHY 1.0000
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.0247 -> FAIL
+    t_stat >= 2.0000: value 0.4992 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.0962 -> FAIL
+    profit_factor >= 1.2000: value 1.0492 -> FAIL
+    mc_max_drawdown_p95 <= 0.1500: value 0.1480 -> PASS
+    deflated_sharpe_ratio >= 0.9500: value 0.4100 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 89.5000 -> FAIL
+    expectancy_r_at_2x_cost > 0.0000: value 0.0302 -> PASS
+    vs_buy_and_hold (any of) -> FAIL
+      alternative 1 -> FAIL
+        sharpe_minus_bh_sharpe >= 0.0000: value -0.2537 -> FAIL
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.2656 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.1229 -> FAIL
+    overall -> FAIL
+
+[tf_t1_sma200] TF (trend baseline): Trend following: hold while close > SMA200
+  strategy 2.0.0-tf_t1_sma200, config sha256 5b9a34c62faf, trial tf_t1_sma200-dev-20261002T213313Z-5b9a34c62faf
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 29.97%, CAGR 4.35%, Sharpe 0.654, Sortino 0.865, max DD 13.82%, exposure 80.48%, PSR 0.9424
+    trades 62 (R 62), E[R] 0.4787, t 1.62, p 0.0557, 95% t-CI [-0.1137, 1.0711], PF 2.366, win rate 33.87%, net P&L 29971.60; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 13.82%, p50 13.34%, p95 25.06%; P(DD >= 10.00% owner halt) 0.7979; P(DD >= 15.00%) 0.3758
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 75 (R 75), E[R] -0.5852, t -11.36, p 1.0000, 95% t-CI [-0.6878, -0.4826], PF 0.027, win rate 12.00%, net P&L -40641.23
+    block bootstrap (ISO weeks, 46 blocks, 10000 resamples): E[R] CI [-0.7080, -0.4480], P(E <= 0) 1.0000, PF CI [0.010, 0.055]
+    trades open at a window end (not counted): 37
+    windows: 2017-11-01..2018-01-31 0 tr E n/a; 2018-02-01..2018-04-30 7 tr E -0.875; 2018-05-01..2018-07-31 0 tr E n/a; 2018-08-01..2018-10-31 5 tr E -0.809; 2018-11-01..2019-01-31 3 tr E -0.650; 2019-02-01..2019-04-30 4 tr E -0.200; 2019-05-01..2019-07-31 7 tr E -0.845; 2019-08-01..2019-10-31 3 tr E -1.016; 2019-11-01..2020-01-31 0 tr E n/a; 2020-02-01..2020-04-30 8 tr E -0.756; 2020-05-01..2020-07-31 4 tr E -0.073; 2020-08-01..2020-10-31 1 tr E -0.558; 2020-11-01..2021-01-31 0 tr E n/a; 2021-02-01..2021-04-30 1 tr E -1.008; 2021-05-01..2021-07-31 3 tr E -1.075; 2021-08-01..2021-10-31 6 tr E -0.287; 2021-11-01..2022-01-31 8 tr E -0.686; 2022-02-01..2022-04-30 9 tr E -0.249; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 1 tr E -0.107; 2022-11-01..2022-12-31 5 tr E -0.266
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 58 (R 58), E[R] 0.1086, t 0.57, p 0.2841, 95% t-CI [-0.2703, 0.4875], PF 1.423, win rate 31.03%, net P&L 8901.57
+    block bootstrap (ISO weeks, 41 blocks, 10000 resamples): E[R] CI [-0.2293, 0.5316], P(E <= 0) 0.3015, PF CI [0.396, 3.219]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.4787, PF 2.366, return 29.97%
+    x2 (10 bps): E[R] 0.6078, PF 2.959, return 38.42%
+    x3 (15 bps): E[R] 0.5823, PF 2.761, return 36.27%
+    break-even cost: 128.90 bps per side (extrapolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 62 trades): real mean return 3.01% vs p5/p50/p95 1.39%/2.48%/3.80% -> percentile 74.2
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 3 tr E 8.134 PF inf; 2017 4 tr E -1.022 PF 0.00; 2018 12 tr E -0.122 PF 0.64; 2019 9 tr E 0.023 PF 1.15; 2020 10 tr E 1.481 PF 10.10; 2021 8 tr E -0.008 PF 0.87; 2022 16 tr E -0.258 PF 0.03
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 23 tr E 0.197 PF 1.81; QQQ 16 tr E 0.871 PF 3.31; SPY 23 tr E 0.487 PF 2.12
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 55 tr E 0.485 PF 2.34; below 7 tr E 0.426 PF 2.60
+  deflated Sharpe (per-session): SR 0.0412, SR0 0.0258, N 8, DSR 0.7226
+  multiple testing: p 0.2841, Holm 1.0000, BHY 1.0000
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.1086 -> PASS
+    t_stat >= 2.0000: value 0.5739 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.2293 -> FAIL
+    profit_factor >= 1.2000: value 1.4228 -> PASS
+    mc_max_drawdown_p95 <= 0.1500: value 0.2506 -> FAIL
+    deflated_sharpe_ratio >= 0.9500: value 0.7226 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 74.2000 -> FAIL
+    expectancy_r_at_2x_cost > 0.0000: value 0.6078 -> PASS
+    vs_buy_and_hold (any of) -> PASS
+      alternative 1 -> PASS
+        sharpe_minus_bh_sharpe >= 0.0000: value 0.0843 -> PASS
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.4120 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.4169 -> FAIL
+    overall -> FAIL
+
+[tf_t2_sma210] TF (trend baseline): Trend following: hold while close > SMA210 (about 10 months, Faber's horizon)
+  strategy 2.0.0-tf_t2_sma210, config sha256 fce340def79d, trial tf_t2_sma210-dev-20261002T213313Z-fce340def79d
+  continuous dev run (halts disabled for research statistics): 2016-11-01..2022-12-31 (1552 sessions, 5 bps/side): return 43.00%, CAGR 5.98%, Sharpe 0.789, Sortino 1.065, max DD 11.77%, exposure 80.61%, PSR 0.9714
+    trades 53 (R 53), E[R] 0.7722, t 2.11, p 0.0198, 95% t-CI [0.0380, 1.5063], PF 3.132, win rate 28.30%, net P&L 43004.89; open at end 0; halt rejections {'DAILY_LOSS_LIMIT': 0, 'WEEKLY_LOSS_LIMIT': 0, 'MAX_DRAWDOWN': 0}
+  Monte-Carlo max DD (stationary bootstrap, mean block 10 sessions, 10000 sims): observed 11.77%, p50 13.03%, p95 23.37%; P(DD >= 10.00% owner halt) 0.8330; P(DD >= 15.00%) 0.3362
+  walk-forward OOS (21 fresh-account test windows, train 12 / test 3 months, halts disabled for research statistics) (informative):
+    trades 70 (R 70), E[R] -0.6423, t -13.03, p 1.0000, 95% t-CI [-0.7406, -0.5439], PF 0.008, win rate 5.71%, net P&L -41810.05
+    block bootstrap (ISO weeks, 43 blocks, 10000 resamples): E[R] CI [-0.7595, -0.5092], P(E <= 0) 1.0000, PF CI [0.001, 0.019]
+    trades open at a window end (not counted): 37
+    windows: 2017-11-01..2018-01-31 0 tr E n/a; 2018-02-01..2018-04-30 6 tr E -0.965; 2018-05-01..2018-07-31 0 tr E n/a; 2018-08-01..2018-10-31 6 tr E -0.757; 2018-11-01..2019-01-31 5 tr E -0.554; 2019-02-01..2019-04-30 3 tr E -0.231; 2019-05-01..2019-07-31 7 tr E -0.845; 2019-08-01..2019-10-31 3 tr E -1.016; 2019-11-01..2020-01-31 0 tr E n/a; 2020-02-01..2020-04-30 8 tr E -0.756; 2020-05-01..2020-07-31 5 tr E -0.175; 2020-08-01..2020-10-31 1 tr E -0.558; 2020-11-01..2021-01-31 0 tr E n/a; 2021-02-01..2021-04-30 1 tr E -1.008; 2021-05-01..2021-07-31 3 tr E -1.075; 2021-08-01..2021-10-31 1 tr E -1.014; 2021-11-01..2022-01-31 8 tr E -0.686; 2022-02-01..2022-04-30 9 tr E -0.278; 2022-05-01..2022-07-31 0 tr E n/a; 2022-08-01..2022-10-31 1 tr E -0.252; 2022-11-01..2022-12-31 3 tr E -0.414
+  continuous-run trades entered in the walk-forward span — PRIMARY gate sample:
+    trades 47 (R 47), E[R] 0.1398, t 0.58, p 0.2813, 95% t-CI [-0.3428, 0.6224], PF 1.487, win rate 19.15%, net P&L 9820.60
+    block bootstrap (ISO weeks, 34 blocks, 10000 resamples): E[R] CI [-0.2778, 0.7028], P(E <= 0) 0.2973, PF CI [0.286, 3.788]
+  cost stress (continuous run):
+    x1 (5 bps): E[R] 0.7722, PF 3.132, return 43.00%
+    x2 (10 bps): E[R] 0.7994, PF 3.273, return 43.76%
+    x3 (15 bps): E[R] 0.7692, PF 3.124, return 42.41%
+    break-even cost: 142.47 bps per side (extrapolated)
+  buy-and-hold (same bars, 5 bps/side; gate: equal_weight(IWM,QQQ,SPY)):
+    IWM: CAGR 6.43%, Sharpe 0.379, max DD 42.39%
+    QQQ: CAGR 14.23%, Sharpe 0.674, max DD 35.61%
+    SPY: CAGR 9.95%, Sharpe 0.588, max DD 34.16%
+    equal_weight(IWM,QQQ,SPY): CAGR 10.43%, Sharpe 0.570, max DD 33.54%
+  random entry (1000 sims, 53 trades): real mean return 3.99% vs p5/p50/p95 1.57%/2.97%/4.52% -> percentile 86.7
+  regimes by years (continuous dev run (halts disabled for research statistics)): 2016 3 tr E 8.134 PF inf; 2017 4 tr E 2.208 PF 13.99; 2018 11 tr E -0.326 PF 0.24; 2019 8 tr E 0.040 PF 1.29; 2020 11 tr E 1.392 PF 9.20; 2021 2 tr E -0.111 PF 0.00; 2022 14 tr E -0.295 PF 0.00
+  regimes by symbols (continuous dev run (halts disabled for research statistics)): IWM 16 tr E 0.652 PF 3.55; QQQ 15 tr E 1.237 PF 4.47; SPY 22 tr E 0.543 PF 2.05
+  regimes by SPY vs SMA200 (continuous dev run (halts disabled for research statistics)): above 43 tr E 0.906 PF 3.56; below 10 tr E 0.196 PF 1.60
+  deflated Sharpe (per-session): SR 0.0497, SR0 0.0258, N 8, DSR 0.8202
+  multiple testing: p 0.2813, Holm 1.0000, BHY 1.0000
+  gate (pass_rule.dev):
+    expectancy_r >= 0.1000: value 0.1398 -> PASS
+    t_stat >= 2.0000: value 0.5831 -> FAIL
+    bootstrap_expectancy_ci_low > 0.0000: value -0.2778 -> FAIL
+    profit_factor >= 1.2000: value 1.4868 -> PASS
+    mc_max_drawdown_p95 <= 0.1500: value 0.2337 -> FAIL
+    deflated_sharpe_ratio >= 0.9500: value 0.8202 -> FAIL
+    pbo < 0.5000: value 0.4643 -> PASS
+    random_entry_percentile >= 95.0000: value 86.7000 -> FAIL
+    expectancy_r_at_2x_cost > 0.0000: value 0.7994 -> PASS
+    vs_buy_and_hold (any of) -> PASS
+      alternative 1 -> PASS
+        sharpe_minus_bh_sharpe >= 0.0000: value 0.2192 -> PASS
+      alternative 2 -> FAIL
+        max_drawdown_over_bh_max_drawdown <= 0.5000: value 0.3508 -> PASS
+        cagr_over_bh_cagr >= 0.6000: value 0.5733 -> FAIL
+    overall -> FAIL
+
+Research statistics use research-only copies of the configs with the loss-limit halts disabled (daily, weekly and max-drawdown limits = 1.0); exposure, position and open-risk limits are kept. The official run (python -m backtest) is unaffected.
+Per-trade criteria (expectancy, t, bootstrap CI, PF, Holm/BHY) use the protocol's gate_sample: walk_forward_fresh_accounts = pooled walk-forward test windows, each a fresh account (no parameter is optimised, train windows are informative; a trade still open at a window end is never closed and not counted, see wf_open_trades_at_end, which cuts long-holding trend trades); continuous_walk_forward_span = continuous-run trades entered in the walk-forward span. Both samples are reported.
+Account-level criteria (Sharpe, DSR, Monte-Carlo drawdown, cost stress, random entry, buy-and-hold, PBO) use the continuous dev-window run. Session marks are the equity after each session close; exposure = share of sessions ending with a position.
+Buy-and-hold gate benchmark: the equal-weight basket of the hypothesis symbols (no rebalancing), same bars and cost per side; dividends are not credited (split adjustment) for the strategy and the benchmarks alike.
+Cost stress scales only the simulated broker slippage; sizing keeps risk.slippage_buffer_bps. Break-even = linear interpolation of the continuous-run expectancy (R) against the cost per side.
+PBO and DSR depend on the batch: rerunning a subset changes them.
+Backtest results do not imply future profitability (sec. 45.4). Only the deterministic strategy is evaluated; the AI filter is not (sec. 45.1).
+
+DEVELOPMENT EVALUATION 2016-11..2022-12 — lockbox untouched
