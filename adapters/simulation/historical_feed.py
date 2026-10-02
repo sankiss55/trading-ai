@@ -147,10 +147,19 @@ class HistoricalFeed:
         directory: Path,
         *,
         feed: DataFeed,
+        feed_by_timeframe: Mapping[Timeframe, DataFeed] | None = None,
         clock: AdvanceableClock | None = None,
         quotes: Mapping[str, Sequence[Quote]] | None = None,
     ) -> HistoricalFeed:
         """Load every ``{SYMBOL}_{TIMEFRAME}.csv`` file in ``directory`` (sorted by name).
+
+        Args:
+            directory: Directory of the bar files.
+            feed: Feed the bars are tagged with.
+            feed_by_timeframe: Per-timeframe override of ``feed`` (e.g. daily bars of the
+                liquidity filter downloaded from ``sip`` while minute bars are ``iex``).
+            clock: See the class.
+            quotes: See the class.
 
         Raises:
             NonRetryableError: code ``INVALID_BAR_DATA`` for a bad file name or content.
@@ -168,7 +177,8 @@ class HistoricalFeed:
                 raise NonRetryableError(
                     f"{path.name}: expected SYMBOL_TIMEFRAME.csv", code="INVALID_BAR_DATA"
                 )
-            bars.extend(load_bars_csv(path, symbol=symbol, timeframe=timeframe, feed=feed))
+            file_feed = (feed_by_timeframe or {}).get(timeframe, feed)
+            bars.extend(load_bars_csv(path, symbol=symbol, timeframe=timeframe, feed=file_feed))
         return cls(bars, clock=clock, quotes=quotes)
 
     def _known(self, bar: Bar) -> bool:

@@ -6,7 +6,8 @@
 # (0.005 = 0.5 %); *_bps are basis points. Numbers are unquoted on purpose: the loader
 # parses YAML floats as exact Decimals.
 
-config_version: "2.2.0"  # 2.2.0: owner decisions 2026-10-02 filled (docs/DECISIONS.md)
+config_version: "2.3.0"  # 2.3.0: universe.liquidity_feed = "sip" (owner decision 2026-10-02)
+                         # 2.2.0: owner decisions 2026-10-02 filled (docs/DECISIONS.md)
                          # 2.1.0: ai.provider and ai.cli_* added (owner decision 2026-10-02)
 strategy_version: "1.0.0"  # 1.0.0: first owner-approved strategy (2026-10-02)
 risk_version: "1.0.0"      # 1.0.0: first owner-approved risk limits (2026-10-02)
@@ -27,7 +28,8 @@ universe:
   blacklist: []
   min_price: 10                      # OWNER_DECISION 2026-10-02
   max_price: 2000                    # OWNER_DECISION 2026-10-02
-  min_avg_daily_volume: 5000000      # OWNER_DECISION 2026-10-02 (shares/day, computed from historical daily bars)
+  min_avg_daily_volume: 5000000      # OWNER_DECISION 2026-10-02 (shares/day, computed from historical SIP daily bars, see liquidity_feed)
+  liquidity_feed: "sip"              # OWNER_DECISION 2026-10-02: feed used ONLY for daily bars of the liquidity filter (sec. 10.2.1); minute bars and strategy use market_data.feed
   avg_volume_lookback_days: 20       # SUGERIDO
   max_spread_bps: 20                 # OWNER_DECISION 2026-10-02 (see sec. 10.5 about IEX)
 

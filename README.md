@@ -55,7 +55,7 @@ sets it in `docs/DECISIONS.md`; a `null` blocks enabling trading.
 
 | Phase | Status |
 | --- | --- |
-| 0. Specification (owner decisions) | In progress: owner decisions of 2026-10-02 recorded in `config.yaml` 2.2.0; still open: `ai.model_id` (VERIFICAR) and the notification-policy item of sec. 59 |
+| 0. Specification (owner decisions) | In progress: owner decisions of 2026-10-02 recorded in `config.yaml` 2.3.0; still open: `ai.model_id` (VERIFICAR) and the notification-policy item of sec. 59 |
 | 1. Strategy and backtest | In progress: models, ports, errors and architecture test done |
 | 2-11 | Not started |
 

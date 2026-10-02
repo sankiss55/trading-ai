@@ -20,7 +20,7 @@ from app.config import (
     risk_params,
     session_window_params,
 )
-from domain.models import HoldingMode, Timeframe
+from domain.models import DataFeed, HoldingMode, Timeframe
 from domain.risk.exits import ExitParams
 from domain.risk.risk_engine import RiskParams
 from domain.strategy.strategy import Strategy, required_warmup_bars
@@ -52,7 +52,9 @@ def test_real_config_has_no_pending_decision_and_validates() -> None:
     loaded = load_config(REAL_CONFIG)
     assert loaded.config_hash == hashlib.sha256(REAL_CONFIG.read_bytes()).hexdigest()
     config = loaded.config
-    assert config.config_version == "2.2.0"
+    assert config.config_version == "2.3.0"
+    assert config.universe.liquidity_feed is DataFeed.SIP
+    assert config.market_data.feed is DataFeed.IEX
     assert config.strategy_version == "1.0.0"
     assert config.risk_version == "1.0.0"
     assert config.market_data.adjustment == "split"
@@ -80,6 +82,7 @@ def test_pending_config_loads_and_lists_pending_decisions() -> None:
     pending = pending_owner_decisions(loaded.config)
     for expected in (
         "universe.whitelist",
+        "universe.liquidity_feed",
         "market_data.feed",
         "market_data.adjustment",
         "strategy.holding_mode",
@@ -221,7 +224,8 @@ def test_missing_file_fails(tmp_path: Path) -> None:
         ("max_positions: 2", 'max_positions: "two"', "risk.max_positions"),
         ("max_positions: 2", "max_positions: 2.5", "risk.max_positions"),
         ("cooldown_bars: 3", "cooldown_bars: -1", "strategy.cooldown_bars"),
-        ('feed: "iex"', 'feed: "nasdaq"', "market_data.feed"),
+        ('  feed: "iex"', '  feed: "nasdaq"', "market_data.feed"),
+        ('liquidity_feed: "sip"', 'liquidity_feed: "nasdaq"', "universe.liquidity_feed"),
         ('adjustment: "split"', 'adjustment: "none"', "market_data.adjustment"),
         ("allow_premarket: false", "allow_premarket: true", "session.allow_premarket"),
         ("include_news: false", "include_news: 1", "ai.include_news"),
@@ -238,6 +242,20 @@ def test_invalid_values_fail_at_startup(old: str, new: str, location: str) -> No
     with pytest.raises(ConfigError) as info:
         _parse(_replace(_fixture_text(), old, new))
     assert location in str(info.value)
+
+
+def test_missing_liquidity_feed_key_is_rejected() -> None:
+    text = _replace(_fixture_text(), '  liquidity_feed: "sip"\n', "")
+    with pytest.raises(ConfigError, match=re.escape("universe.liquidity_feed")):
+        _parse(text)
+
+
+def test_null_liquidity_feed_is_a_pending_decision() -> None:
+    text = _replace(_fixture_text(), 'liquidity_feed: "sip"', "liquidity_feed: null")
+    config = _parse(text)
+    assert pending_owner_decisions(config) == ("universe.liquidity_feed",)
+    # the backtest does not apply the liquidity filter yet: not a backtest blocker
+    assert pending_backtest_decisions(config) == ()
 
 
 def test_missing_adjustment_key_is_rejected() -> None:

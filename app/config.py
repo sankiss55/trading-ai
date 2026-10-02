@@ -166,13 +166,20 @@ class SystemSection(_Section):
 
 
 class UniverseSection(_Section):
-    """``universe``: tradable symbols and liquidity filters (sec. 12)."""
+    """``universe``: tradable symbols and liquidity filters (sec. 12).
+
+    ``liquidity_feed`` (owner decision 2026-10-02) is the feed of the historical DAILY
+    bars that ``min_avg_daily_volume`` is measured on (sec. 10.2.1). It is used ONLY
+    for those daily bars; minute bars and the strategy use ``market_data.feed``
+    (sec. 10.2.2: same feed live and in backtest).
+    """
 
     whitelist: Annotated[tuple[Symbol, ...], Field(min_length=1)] | None
     blacklist: tuple[Symbol, ...]
     min_price: PositiveMoney | None
     max_price: PositiveMoney | None
     min_avg_daily_volume: NonNegativeInt | None
+    liquidity_feed: DataFeed | None
     avg_volume_lookback_days: PositiveInt
     max_spread_bps: NonNegativeMoney | None
 
@@ -512,6 +519,7 @@ OWNER_DECISION_PATHS: Final[tuple[str, ...]] = (
     "universe.min_price",
     "universe.max_price",
     "universe.min_avg_daily_volume",
+    "universe.liquidity_feed",
     "universe.max_spread_bps",
     "market_data.feed",
     "market_data.adjustment",

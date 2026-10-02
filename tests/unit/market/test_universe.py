@@ -159,6 +159,20 @@ def test_check_avg_daily_volume(minimum: Decimal | int, passed: bool, code: Univ
     _assert(result, passed, code)
 
 
+def test_check_avg_daily_volume_has_no_feed_assumption() -> None:
+    # Owner decision 2026-10-02: the liquidity filter runs on SIP daily bars while the
+    # strategy uses IEX minute bars; the check must accept daily bars of any feed.
+    bars = [b.model_copy(update={"feed": DataFeed.SIP}) for b in _daily_series([6_000_000] * 3)]
+    result = check_avg_daily_volume(
+        "SPY",
+        bars,
+        lookback_days=2,
+        min_avg_daily_volume=5_000_000,
+        as_of_utc=datetime(2026, 6, 10, tzinfo=UTC),
+    )
+    _assert(result, True, UniverseCode.AVG_VOLUME_OK)
+
+
 def test_check_avg_daily_volume_insufficient_data_fails_closed() -> None:
     result = check_avg_daily_volume(
         "SPY",

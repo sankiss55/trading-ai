@@ -43,7 +43,7 @@ never invents these values: until they are set, the matching `config.yaml` keys 
 ## Owner decisions 2026-10-02
 
 Approved by the project owner on 2026-10-02 and written into `config.yaml`
-(`config_version` 2.2.0, `strategy_version` 1.0.0, `risk_version` 1.0.0; every key is
+(`config_version` 2.2.0, 2.3.0 for group 18; `strategy_version` 1.0.0, `risk_version` 1.0.0; every key is
 marked `# OWNER_DECISION 2026-10-02`). How they were decided:
 
 - **Chosen one by one by the owner:** `market_data.feed`, `universe.whitelist`,
@@ -51,7 +51,8 @@ marked `# OWNER_DECISION 2026-10-02`). How they were decided:
   `strategy.flatten_minutes_before_close` and `strategy.primary_timeframe`.
 - **Approved as a package:** every other value in the table, proposed by the coding agent and
   approved by the owner as a whole.
-- **Approved separately by the owner:** group 16 (price adjustment convention).
+- **Approved separately by the owner:** group 16 (price adjustment convention), group 17
+  (notification policy) and group 18 (liquidity feed, `config_version` 2.3.0).
 
 Units: every `*_pct` of `risk`, `strategy.no_trade_thresholds` and `backtest` is a
 fraction (`0.005` = 0.5 %; see `domain/risk/risk_engine.py` and `backtest/report.py`);
@@ -64,7 +65,7 @@ trading, not evidence of profitability (sec. 45.4).
 | 2 | Universe | `universe.whitelist` | `SPY, QQQ, IWM, AAPL, MSFT, NVDA, AMZN, META` | Owner, one by one |
 | 2 | Universe | `universe.min_price` | 10 | Owner, package |
 | 2 | Universe | `universe.max_price` | 2000 | Owner, package |
-| 2 | Universe | `universe.min_avg_daily_volume` | 5000000 shares/day | Owner, package |
+| 2 | Universe | `universe.min_avg_daily_volume` | 5000000 shares/day, measured on SIP (consolidated) historical daily bars (`universe.liquidity_feed`, group 18) | Owner, package |
 | 2 | Universe | `universe.max_spread_bps` | 20 bps | Owner, package |
 | 3 | Session | `session.no_entry_first_minutes` | 15 | Owner, one by one |
 | 3 | Session | `session.no_entry_last_minutes` | 30 | Owner, one by one |
@@ -125,6 +126,21 @@ trading, not evidence of profitability (sec. 45.4).
 | 15 | Backups | `backups.retention_days` | 30 | Owner, package |
 | 16 | Price adjustment (sec. 44) | `market_data.adjustment` | `split` (split-adjusted only; dividends not adjusted: intraday, no overnight positions). Backtest and live must use the same convention | Owner, separate approval |
 | 17 | Notifications (sec. 40) | `notifications.policy` | `critical_plus_daily` (critical events immediately, daily summary, error digest every `error_digest_minutes`) | Owner, separate approval |
+| 18 | Liquidity feed (sec. 10.2.1, 12) | `universe.liquidity_feed` | `sip`: the daily bars of the liquidity filter (`min_avg_daily_volume`) come from SIP; minute bars and the strategy keep `market_data.feed = iex` (sec. 10.2.2). Reason: IEX daily volume is a small slice of the market (SPY about 1.2-1.4M shares/day on IEX vs about 60M consolidated), so a 5M threshold on IEX would reject every whitelisted symbol. Threshold unchanged | Owner, separate approval |
+
+### Alpaca historical data
+
+- **SIP historical daily bars: access verified on 2026-10-02** with the project paper
+  account (`AlpacaMarketData`, feed `sip`, adjustment `split`): SPY 2025-06-02..2025-06-03
+  returned 2 daily bars (61,630,502 and 63,606,204 shares). Minute bars stay on IEX.
+- The downloader (`python -m backtest.data download`) takes `--feed` (minute bars,
+  `market_data.feed`) and `--daily-feed` (daily bars, `universe.liquidity_feed`), both
+  required. Both feeds are recorded in `manifest.json` (resume refused on a mismatch),
+  and the dataset copy of the manifest makes the loader tag daily bars with their real
+  feed (`sip`) and minute bars with `iex`. The aggregator's `FEED_MISMATCH` check only
+  sees minute bars (daily bars are never streamed to it).
+- The Phase 1 backtest does not apply the universe checks yet, so the daily bars are
+  downloaded and loaded but not consumed by the runner.
 
 Still open after this approval: `ai.model_id` (VERIFICAR), `ai.effort` and the cache prices of `ai.pricing` (VERIFICAR,
 not owner decisions).
@@ -138,6 +154,7 @@ and is recorded here.
 | --- | --- | --- | --- | --- |
 | 2026-10-02 | `config_version` 2.0.0 -> 2.1.0 | `ai.provider = "claude_cli"`, `ai.cli_command`, `ai.cli_max_concurrency = 1`; `ANTHROPIC_API_KEY` removed from `.env.example`; `subprocess` forbidden in `domain/` and `application/` | Owner decision: the AI filter uses the Claude Code CLI session, no API key | Owner (decision); coding agent (config) |
 | 2026-10-02 | `config_version` 2.1.0 -> 2.2.0; `strategy_version` 0.1.0 -> 1.0.0; `risk_version` 0.1.0 -> 1.0.0 | Every remaining unconditional OWNER_DECISION of `config.yaml` filled (universe, feed, session, strategy, rules, exit, risk, AI budgets, retention, backtest, paper, backups) and new required key `market_data.adjustment = "split"` (sec. 44), see "Owner decisions 2026-10-02"; `tests/fixtures/config.pending.yaml` keeps the previous all-null config for the refusal tests | Owner decisions 2026-10-02 (groups 1-6 one by one; groups 7-15 approved as a package proposed by the coding agent; group 16 approved separately) | Owner (decision); coding agent (config) |
+| 2026-10-02 | `config_version` 2.2.0 -> 2.3.0 | New required key `universe.liquidity_feed = "sip"` (group 18): the liquidity filter uses SIP daily bars, minute bars and strategy stay on IEX; downloader `--daily-feed` (required) and per-timeframe feeds in `manifest.json` | Owner decision 2026-10-02: IEX daily volume is too small for the 5M shares/day threshold | Owner (decision); coding agent (config, downloader) |
 
 ## AI provider: Claude Code CLI session (owner decision 2026-10-02)
 

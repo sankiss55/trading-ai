@@ -29,6 +29,7 @@ universe:
   min_price: null                    # OWNER_DECISION
   max_price: null                    # OWNER_DECISION
   min_avg_daily_volume: null         # OWNER_DECISION (shares/day, computed from historical daily bars)
+  liquidity_feed: null               # OWNER_DECISION: feed of the liquidity-filter daily bars, "iex" | "sip"
   avg_volume_lookback_days: 20       # SUGERIDO
   max_spread_bps: null               # OWNER_DECISION (see sec. 10.5 about IEX)
 

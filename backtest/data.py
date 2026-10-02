@@ -6,6 +6,12 @@ Data directory layout (one directory per dataset)::
                               (America/New_York wall times, e.g. 2025-11-28,09:30,13:00)
     bars/{SYMBOL}_1Min.csv    minute bars (t,o,h,l,c,v; t = bar START, UTC ISO 8601 "Z")
     bars/{SYMBOL}_1Day.csv    daily bars, same format (liquidity filters, Phase 4)
+    manifest.json             optional; written by the downloader. Its ``feeds`` maps each
+                              timeframe to the feed its files came from, e.g.
+                              {"1Min": "iex", "1Day": "sip"} (owner decision 2026-10-02:
+                              the liquidity filter uses SIP daily bars, the strategy IEX
+                              minute bars, sec. 10.2). Without it (synthetic or legacy
+                              data) every file is tagged with the caller's feed.
 
 The bar format is the one of ``adapters.simulation.historical_feed`` (loaded with
 ``HistoricalFeed.from_csv_dir``). The calendar is required: the backtest uses a stored
@@ -23,8 +29,8 @@ docstring for the resumable chunk cache and the regular-session filter.
 CLI::
 
     python -m backtest.data download --symbols SPY QQQ --start 2025-06-02
-        --end 2025-06-03 --feed iex --adjustment split --daily-warmup-days 20
-        --out data/alpaca [--env-file .env]
+        --end 2025-06-03 --feed iex --daily-feed sip --adjustment split
+        --daily-warmup-days 20 --out data/alpaca [--env-file .env]
     python -m backtest.data synthetic --out DIR --symbols SYNTH --start ... --end ... --seed N
 
 The legacy invocation without a subcommand (``python -m backtest.data --out ...``) still
@@ -52,7 +58,7 @@ from zoneinfo import ZoneInfo
 from adapters.simulation import HistoricalFeed, build_regular_sessions
 from adapters.simulation.static_calendar import MARKET_TIMEZONE, REGULAR_CLOSE, REGULAR_OPEN
 from domain.errors import DomainError, NonRetryableError
-from domain.models import Bar, DataFeed, SessionDay
+from domain.models import Bar, DataFeed, SessionDay, Timeframe
 from domain.ports import IMarketData
 
 if TYPE_CHECKING:
@@ -84,7 +90,10 @@ CALENDAR_COLUMNS = ("session_date", "open_local", "close_local")
 DOWNLOAD_CACHE_DIR = ".download"
 """Resumable chunk cache of :func:`download_alpaca_bars` (outside ``bars/``)."""
 _MANIFEST_FILE = "manifest.json"
-_MANIFEST_VERSION = 1
+"""Download manifest: ``.download/manifest.json`` (resume check) and, once the download
+completes, a copy at the dataset root that :func:`load_backtest_data` reads."""
+_MANIFEST_VERSION = 2
+"""2: per-timeframe ``feeds`` (minute ``--feed``, daily ``--daily-feed``)."""
 _BAR_HEADER = "t,o,h,l,c,v"
 _CENT = Decimal("0.01")
 _MINUTES_PER_DAY_CAP = 24 * 60
@@ -160,20 +169,57 @@ def load_calendar(path: Path) -> tuple[SessionDay, ...]:
     return tuple(sessions.values())
 
 
+def _dataset_feeds(directory: Path, *, feed: DataFeed) -> dict[Timeframe, DataFeed]:
+    """Per-timeframe feeds recorded in ``directory/manifest.json`` (``{}`` without one).
+
+    The minute feed must be ``feed`` (the strategy feed, sec. 10.2.2).
+
+    Raises:
+        NonRetryableError: ``INVALID_BAR_DATA`` (unreadable manifest) or
+            ``DATASET_FEED_MISMATCH`` (minute bars of another feed).
+    """
+    path = directory / _MANIFEST_FILE
+    if not path.is_file():
+        return {}
+    try:
+        stored = json.loads(path.read_text(encoding="utf-8"))
+        if stored["version"] != _MANIFEST_VERSION:
+            raise ValueError(f"unsupported manifest version {stored['version']!r}")
+        feeds = {Timeframe(tf): DataFeed(value) for tf, value in stored["feeds"].items()}
+        if set(feeds) != {Timeframe.MIN_1, Timeframe.DAY_1}:
+            raise ValueError("feeds must map exactly 1Min and 1Day")
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise NonRetryableError(f"invalid {path}: {exc}", code="INVALID_BAR_DATA") from exc
+    if feeds[Timeframe.MIN_1] is not feed:
+        raise NonRetryableError(
+            f"{path}: minute bars are {feeds[Timeframe.MIN_1].value}, the strategy feed is "
+            f"{feed.value} (sec. 10.2.2: same feed live and in backtest)",
+            code="DATASET_FEED_MISMATCH",
+        )
+    return feeds
+
+
 def load_backtest_data(directory: Path, *, feed: DataFeed) -> BacktestData:
     """Load the bars (``HistoricalFeed.from_csv_dir``) and the calendar of ``directory``.
 
+    Bars are tagged with the feed they came from: with a dataset ``manifest.json``
+    (downloaded data) each timeframe gets its recorded feed (e.g. minute ``iex``,
+    daily ``sip``) and the minute feed must equal ``feed``; without one (synthetic or
+    legacy data) every bar is tagged ``feed``.
+
     Raises:
-        NonRetryableError: ``INVALID_BAR_DATA``, ``DUPLICATE_BAR`` or ``INVALID_CALENDAR``.
+        NonRetryableError: ``INVALID_BAR_DATA``, ``DUPLICATE_BAR``, ``INVALID_CALENDAR``
+            or ``DATASET_FEED_MISMATCH``.
     """
     if not directory.is_dir():
         raise NonRetryableError(f"data directory {directory} not found", code="INVALID_BAR_DATA")
+    feeds = _dataset_feeds(directory, feed=feed)
     sessions = load_calendar(directory / CALENDAR_FILE)
     bars_dir = directory / BARS_DIR
     if not bars_dir.is_dir() or not any(bars_dir.glob("*.csv")):
         raise NonRetryableError(f"no bar files in {bars_dir}", code="INVALID_BAR_DATA")
     return BacktestData(
-        feed=HistoricalFeed.from_csv_dir(bars_dir, feed=feed),
+        feed=HistoricalFeed.from_csv_dir(bars_dir, feed=feed, feed_by_timeframe=feeds),
         sessions=sessions,
         directory=directory,
     )
@@ -365,7 +411,10 @@ class DownloadSpec:
             the backtest indicator warm-up, start some sessions before
             ``backtest.start_date`` (the runner warms up on stored sessions before it).
         end: Last session of the dataset (inclusive).
-        feed: Data feed; must be the one the strategy runs on live (sec. 10.2).
+        feed: Feed of the MINUTE bars; must be the one the strategy runs on live
+            (config ``market_data.feed``, sec. 10.2.2).
+        daily_feed: Feed of the DAILY bars, used only by the liquidity filter (config
+            ``universe.liquidity_feed``, owner decision 2026-10-02, sec. 10.2.1).
         adjustment: Corporate-action adjustment; OWNER_DECISION, same in live and
             backtest (sec. 44). Recorded in the manifest, applied by the market data.
         daily_warmup_days: Trading sessions of daily bars to download BEFORE ``start``
@@ -377,6 +426,7 @@ class DownloadSpec:
     start: date
     end: date
     feed: DataFeed
+    daily_feed: DataFeed
     adjustment: BarAdjustment
     daily_warmup_days: int
 
@@ -401,7 +451,10 @@ class DownloadSpec:
             "symbols": sorted(self.symbols),
             "start": self.start.isoformat(),
             "end": self.end.isoformat(),
-            "feed": self.feed.value,
+            "feeds": {
+                Timeframe.MIN_1.value: self.feed.value,
+                Timeframe.DAY_1.value: self.daily_feed.value,
+            },
             "adjustment": str(self.adjustment.value),
             "daily_warmup_days": self.daily_warmup_days,
             "minute_bars": "regular_session_only",
@@ -483,7 +536,24 @@ def _check_manifest(cache: Path, spec: DownloadSpec) -> None:
                 code="DOWNLOAD_MANIFEST_MISMATCH",
             )
         return
-    path.write_text(json.dumps(expected, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _write_manifest(path, expected)
+
+
+def _write_manifest(path: Path, manifest: Mapping[str, object]) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _replace_atomically(tmp, path)
+
+
+def _check_feed(bars: Sequence[Bar], expected: DataFeed, *, label: str) -> None:
+    """Every downloaded bar must come from the feed the spec records for its timeframe."""
+    wrong = sorted({b.feed.value for b in bars if b.feed is not expected})
+    if wrong:
+        raise NonRetryableError(
+            f"{label}: bars from feed {wrong}, expected {expected.value}; the market data "
+            "source is configured with the wrong feed",
+            code="FEED_MISMATCH",
+        )
 
 
 def _in_session(bar: Bar, by_date: Mapping[date, SessionDay]) -> bool:
@@ -507,14 +577,20 @@ async def download_alpaca_bars(
     spec: DownloadSpec,
     *,
     market_data: IMarketData,
+    daily_market_data: IMarketData,
     calendar: SessionSource,
     progress: Callable[[str], None] = print,
 ) -> DownloadResult:
     """Download real bars + calendar into ``directory`` in the backtest layout.
 
     Writes exactly what :func:`load_backtest_data` reads: ``calendar.csv`` (sessions in
-    ``[spec.start, spec.end]`` from the broker calendar) and ``bars/{SYMBOL}_1Min.csv``
-    / ``bars/{SYMBOL}_1Day.csv`` (writer of the synthetic generator, ``t`` = bar START).
+    ``[spec.start, spec.end]`` from the broker calendar), ``bars/{SYMBOL}_1Min.csv``
+    / ``bars/{SYMBOL}_1Day.csv`` (writer of the synthetic generator, ``t`` = bar START)
+    and the dataset ``manifest.json`` (per-timeframe feeds), written last.
+
+    * Feeds: minute bars from ``market_data`` (``spec.feed``), daily bars from
+      ``daily_market_data`` (``spec.daily_feed``). Every bar is checked against the
+      feed of its timeframe (``FEED_MISMATCH`` on a wiring error).
 
     * Minute bars: **regular session only** (``open_utc <= start`` and ``end <=
       close_utc`` of the session of that date, early closes honored). Pre/post-market
@@ -530,8 +606,10 @@ async def download_alpaca_bars(
     Args:
         directory: Dataset directory (created if needed).
         spec: What to download.
-        market_data: Historical bars (``AlpacaMarketData`` configured with
+        market_data: Historical minute bars (``AlpacaMarketData`` configured with
             ``spec.feed`` and ``spec.adjustment``).
+        daily_market_data: Historical daily bars (``AlpacaMarketData`` configured with
+            ``spec.daily_feed`` and ``spec.adjustment``).
         calendar: Trading calendar (``AlpacaCalendar``).
         progress: Receives one line per symbol/chunk.
 
@@ -578,6 +656,7 @@ async def download_alpaca_bars(
             bars = await market_data.get_minute_bars(
                 symbol, month_sessions[0].open_utc, month_sessions[-1].close_utc
             )
+            _check_feed(bars, spec.feed, label=label)
             kept = [b for b in bars if _in_session(b, by_date)]
             _write_chunk(path, kept)
             downloaded += 1
@@ -591,7 +670,8 @@ async def download_alpaca_bars(
                 cached += 1
                 progress(f"{label}: cached")
                 continue
-            daily = await market_data.get_daily_bars(symbol, first, last)
+            daily = await daily_market_data.get_daily_bars(symbol, first, last)
+            _check_feed(daily, spec.daily_feed, label=label)
             _write_chunk(path, daily)
             downloaded += 1
             progress(f"{label}: {len(daily)} daily bars")
@@ -607,6 +687,7 @@ async def download_alpaca_bars(
     calendar_tmp = directory / (CALENDAR_FILE + ".tmp")
     write_calendar(calendar_tmp, sessions)
     _replace_atomically(calendar_tmp, directory / CALENDAR_FILE)
+    _write_manifest(directory / _MANIFEST_FILE, spec.manifest())
     return DownloadResult(
         directory=directory,
         sessions=sessions,
@@ -654,13 +735,29 @@ def _download_parser() -> argparse.ArgumentParser:
             "NOTE: --adjustment has no default. The dividend/split adjustment convention "
             "is an OWNER_DECISION (sec. 44/59) that must equal config "
             "market_data.adjustment; live and backtest MUST use the same convention. "
-            "--feed must match config market_data.feed (sec. 10.2)."
+            "--feed (minute bars) must match config market_data.feed (sec. 10.2.2); "
+            "--daily-feed (daily bars of the liquidity filter only) must match config "
+            "universe.liquidity_feed (sec. 10.2.1, owner decision 2026-10-02)."
         ),
     )
     parser.add_argument("--symbols", nargs="+", required=True)
     parser.add_argument("--start", type=date.fromisoformat, required=True, help="YYYY-MM-DD")
     parser.add_argument("--end", type=date.fromisoformat, required=True, help="YYYY-MM-DD")
-    parser.add_argument("--feed", choices=[f.value for f in DataFeed], required=True)
+    parser.add_argument(
+        "--feed",
+        choices=[f.value for f in DataFeed],
+        required=True,
+        help="feed of the MINUTE bars (REQUIRED; config market_data.feed)",
+    )
+    parser.add_argument(
+        "--daily-feed",
+        choices=[f.value for f in DataFeed],
+        required=True,
+        help=(
+            "feed of the DAILY bars, used only by the liquidity filter (REQUIRED, no "
+            "default; config universe.liquidity_feed)"
+        ),
+    )
     parser.add_argument(
         "--adjustment",
         choices=["raw", "split", "dividend", "all"],
@@ -709,6 +806,7 @@ def _run_download(argv: Sequence[str]) -> int:
             start=args.start,
             end=args.end,
             feed=DataFeed(args.feed),
+            daily_feed=DataFeed(args.daily_feed),
             adjustment=BarAdjustment(args.adjustment),
             daily_warmup_days=args.daily_warmup_days,
         )
@@ -717,12 +815,16 @@ def _run_download(argv: Sequence[str]) -> int:
         market_data = AlpacaMarketData.from_credentials(
             credentials, feed=spec.feed, adjustment=spec.adjustment, retry_policy=policy
         )
+        daily_market_data = AlpacaMarketData.from_credentials(
+            credentials, feed=spec.daily_feed, adjustment=spec.adjustment, retry_policy=policy
+        )
         calendar = AlpacaCalendar.from_credentials(credentials, retry_policy=policy)
         result = asyncio.run(
             download_alpaca_bars(
                 args.out,
                 spec,
                 market_data=market_data,
+                daily_market_data=daily_market_data,
                 calendar=calendar,
                 progress=lambda line: print(line, flush=True),
             )
