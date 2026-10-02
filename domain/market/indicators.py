@@ -46,6 +46,8 @@ __all__ = [
     "bar_volumes",
     "ema",
     "ema_min_bars",
+    "ibs",
+    "ibs_min_bars",
     "rsi",
     "rsi_min_bars",
     "shared_run",
@@ -141,6 +143,11 @@ def sma(values: Sequence[Numeric], period: int) -> IndicatorSeries:
     ints = _exact_ints(values)
     if ints is not None:
         return _sma_exact_ints(ints, period)
+    return _sma_core(data, period)
+
+
+def _sma_core(data: Sequence[float], period: int) -> IndicatorSeries:
+    """SMA core for finite floats: ``fsum`` of each window divided by ``period``."""
     out: list[float | None] = [None] * len(data)
     for i in range(period - 1, len(data)):
         out[i] = math.fsum(data[i - period + 1 : i + 1]) / period
@@ -350,6 +357,43 @@ def _atr_core(tr: Sequence[float], period: int) -> IndicatorSeries:
     return tuple(out)
 
 
+# --------------------------------------------------------------------------- IBS
+
+
+def ibs_min_bars() -> int:
+    """Number of bars required before the first IBS value (each bar stands alone)."""
+    return 1
+
+
+def ibs(
+    highs: Sequence[Numeric], lows: Sequence[Numeric], closes: Sequence[Numeric]
+) -> IndicatorSeries:
+    """Internal bar strength per bar: ``(close - low) / (high - low)``, in ``[0, 1]``.
+
+    ``0`` = closed at the low, ``1`` = closed at the high. ``None`` when ``high == low``
+    (no range: the ratio is undefined). Each value uses only its own bar.
+    """
+    _check_same_length(highs=highs, lows=lows, closes=closes)
+    h = _to_floats(highs, "highs")
+    lo = _to_floats(lows, "lows")
+    c = _to_floats(closes, "closes")
+    for i, (high, low) in enumerate(zip(h, lo, strict=True)):
+        if low > high:
+            raise IndicatorInputError(
+                f"low[{i}]={low} is above high[{i}]={high}", code=INVALID_INPUT_CODE
+            )
+    return _ibs_core(h, lo, c)
+
+
+def _ibs_core(
+    highs: Sequence[float], lows: Sequence[float], closes: Sequence[float]
+) -> IndicatorSeries:
+    return tuple(
+        None if high == low else (close - low) / (high - low)
+        for high, low, close in zip(highs, lows, closes, strict=True)
+    )
+
+
 # --------------------------------------------------------------------------- volume average
 
 
@@ -377,10 +421,11 @@ class IndicatorInputs:
 
     A sliding window shares all but its newest bars with the previous one. The per-bar
     inputs (prices as float, the true range and the price change of each bar against
-    the previous one) do not depend on where the window starts, so :meth:`from_bars`
-    carries them over for the bars shared with ``previous`` and converts only the new
-    ones. The recursive indicators (EMA, RSI, ATR) do depend on the window start (their
-    seed) and are recomputed by the **same** cores as the batch functions above: each
+    the previous one, the IBS of each bar) do not depend on where the window starts, so
+    :meth:`from_bars` carries them over for the bars shared with ``previous`` and
+    converts only the new ones. The recursive indicators (EMA, RSI, ATR) do depend on
+    the window start (their seed) and are recomputed by the **same** cores as the batch
+    functions above (the SMA too): each
     method returns exactly what the batch function returns on the same bars (sec. 14.5:
     one implementation, see ``tests/unit/market/test_indicators.py``).
 
@@ -394,6 +439,7 @@ class IndicatorInputs:
         linked_true_ranges: ``[k]`` = true range of ``bars[k + 1]`` against the close of
             ``bars[k]``.
         gains: ``[k]`` = gain from ``bars[k]`` to ``bars[k + 1]``; likewise ``losses``.
+        ibs_values: :func:`ibs` of each bar.
     """
 
     bars: tuple[Bar, ...]
@@ -408,6 +454,7 @@ class IndicatorInputs:
     linked_true_ranges: tuple[float, ...]
     gains: tuple[float, ...]
     losses: tuple[float, ...]
+    ibs_values: tuple[float | None, ...]
 
     @classmethod
     def from_bars(
@@ -469,6 +516,7 @@ class IndicatorInputs:
                 linked_true_ranges=tuple(_linked_true_ranges(high_f, low_f, close_f)),
                 gains=tuple(gains),
                 losses=tuple(losses),
+                ibs_values=_ibs_core(high_f, low_f, close_f),
             )
         keep = slice(offset, offset + shared)
         pairs = slice(offset, offset + shared - 1)
@@ -492,6 +540,7 @@ class IndicatorInputs:
             + tuple(_linked_true_ranges(link_h, link_l, link_c)),
             gains=previous.gains[pairs] + tuple(gains),
             losses=previous.losses[pairs] + tuple(losses),
+            ibs_values=previous.ibs_values[keep] + _ibs_core(high_f, low_f, close_f),
         )
 
     def ema(self, period: int) -> IndicatorSeries:
@@ -519,6 +568,15 @@ class IndicatorInputs:
         """:func:`volume_average` of the volumes."""
         _check_period(period)
         return _sma_exact_ints(self.volumes, period)
+
+    def sma(self, period: int) -> IndicatorSeries:
+        """:func:`sma` of the closes (``Decimal`` closes take its ``fsum`` path)."""
+        _check_period(period)
+        return _sma_core(self.close_floats, period)
+
+    def ibs(self) -> IndicatorSeries:
+        """:func:`ibs` of the bars."""
+        return self.ibs_values
 
 
 def _shared_prefix(previous: IndicatorInputs | None, bars: tuple[Bar, ...]) -> tuple[int, int]:

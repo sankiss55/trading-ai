@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from domain.market.indicators import atr, bar_closes, ema, rsi, volume_average
+from domain.market.indicators import atr, bar_closes, ema, ibs, rsi, sma, volume_average
 from domain.models import BarStatus, Timeframe
 from domain.strategy.features import (
     IndicatorParams,
@@ -50,6 +50,52 @@ def test_series_use_the_shared_indicators() -> None:
     assert frame.series["close"] == closes
     assert frame.value("close", -1) == Decimal(UPTREND_CLOSES[-1])
     assert frame.value("volume", -1) == 3000
+
+
+def test_ibs_and_sma_series_use_the_shared_indicators() -> None:
+    bars = uptrend_bars()
+    periods = PERIODS.model_copy(update={"sma_short_period": 2, "sma_long_period": 5})
+    frame = build_feature_frame(bars, timeframe=Timeframe.MIN_5, periods=periods)
+    closes = bar_closes(bars)
+    highs = tuple(b.high for b in bars if b.high is not None)
+    lows = tuple(b.low for b in bars if b.low is not None)
+    assert frame.series["ibs"] == ibs(highs, lows, closes)
+    assert frame.series["sma_short"] == sma(closes, 2)
+    assert frame.series["sma_long"] == sma(closes, 5)
+    high, low, close = highs[-1], lows[-1], closes[-1]
+    assert frame.value("ibs", -1) == pytest.approx(float((close - low) / (high - low)))
+
+
+def test_optional_sma_periods_default_to_none_series() -> None:
+    frame = build_feature_frame(uptrend_bars(), timeframe=Timeframe.MIN_5, periods=PERIODS)
+    assert PERIODS.sma_short_period is None
+    assert PERIODS.sma_long_period is None
+    assert set(frame.series["sma_short"]) == {None}
+    assert set(frame.series["sma_long"]) == {None}
+    assert PERIODS.min_bars("sma_long_period") == 0
+    assert PERIODS.model_copy(update={"sma_long_period": 7}).min_bars("sma_long_period") == 7
+
+
+def test_ibs_is_none_on_a_bar_without_range_and_skips_empty_bars() -> None:
+    bars = series_bars(["10", "11", "12"])
+    flat = bars[1].model_copy(
+        update={"open": Decimal(11), "high": Decimal(11), "low": Decimal(11), "close": Decimal(11)}
+    )
+    shifted = bars[2].model_copy(
+        update={
+            "bar_start_utc": bars[2].bar_start_utc + timedelta(minutes=5),
+            "bar_end_utc": bars[2].bar_end_utc + timedelta(minutes=5),
+        }
+    )
+    frame = build_feature_frame(
+        [bars[0], flat, empty_bar(bars[1].bar_end_utc), shifted],
+        timeframe=Timeframe.MIN_5,
+        periods=PERIODS,
+    )
+    assert len(frame.series["ibs"]) == 3  # the EMPTY bar is not a priced bar
+    assert frame.series["ibs"][1] is None
+    assert frame.value("ibs", -1) == pytest.approx(0.75)  # (12 - 10.5) / (12.5 - 10.5)
+    assert frame.value("ibs", -3) == pytest.approx(0.5)  # (10 - 9.5) / (10.5 - 9.5)
 
 
 def test_atr_pct_is_atr_over_close() -> None:

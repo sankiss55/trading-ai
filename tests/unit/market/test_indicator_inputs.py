@@ -27,6 +27,7 @@ from domain.market.indicators import (
     bar_lows,
     bar_volumes,
     ema,
+    ibs,
     rsi,
     sma,
     true_range,
@@ -83,7 +84,9 @@ def _assert_inputs_match_batch(inputs: IndicatorInputs, bars: Sequence[Bar]) -> 
     assert inputs.opens == tuple(b.open for b in bars)
     assert inputs.volumes == volumes
     assert inputs.true_range() == true_range(highs, lows, closes)
+    assert inputs.ibs() == ibs(highs, lows, closes)
     for period in PERIODS:
+        assert inputs.sma(period) == sma(closes, period)
         assert inputs.ema(period) == ema(closes, period)
         assert inputs.rsi(period) == rsi(closes, period)
         assert inputs.atr(period) == atr(highs, lows, closes, period)

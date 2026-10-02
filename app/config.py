@@ -17,6 +17,12 @@
   ``history_warmup_bars >= required_warmup_bars(strategy)`` (computed from the periods
   and offsets that are already set; no extra margin is invented). The whitelist
   tradability check needs the broker and belongs to startup (Phase 2).
+  ``primary_timeframe = 1Day`` (strategy family v2) requires ``holding_mode = swing`` and
+  ``confirmation_timeframe = null``. For a daily strategy ``session.no_entry_*``,
+  ``flatten_minutes_before_close`` and ``min_minutes_per_bar`` have no effect (daily bars
+  are decided after the close and entered at the next open), but ``session.no_entry_*``
+  stay required OWNER_DECISION keys; the optional ``strategy.indicators.sma_short_period``
+  / ``sma_long_period`` default to ``null`` (not used).
   ``ai.provider = "anthropic_api"`` is rejected (owner decision 2026-10-02: the AI
   filter uses the Claude Code CLI session, see ``docs/DECISIONS.md``).
 * :func:`load_config` returns the validated config together with ``config_hash`` (the
@@ -50,7 +56,7 @@ from yaml.nodes import MappingNode, ScalarNode
 
 from domain.errors import NonRetryableError
 from domain.market.session import SessionWindowParams
-from domain.models import DataFeed, HoldingMode, Money, NonEmptyStr, Symbol
+from domain.models import DataFeed, HoldingMode, Money, NonEmptyStr, Symbol, Timeframe
 from domain.risk.exits import ExitParams
 from domain.risk.risk_engine import Bps, Fraction, RiskParams, pending_risk_params
 from domain.strategy.strategy import StrategyParams, pending_strategy_params, required_warmup_bars
@@ -398,6 +404,17 @@ class AppConfig(_Section):
                 "strategy.holding_mode = intraday requires "
                 "strategy.flatten_minutes_before_close (sec. 7.4.4)"
             )
+        if strategy.primary_timeframe is Timeframe.DAY_1:
+            if strategy.holding_mode is not HoldingMode.SWING:
+                raise ValueError(
+                    "strategy.primary_timeframe = 1Day requires strategy.holding_mode = "
+                    "swing (decided after the close, entered at the next open)"
+                )
+            if strategy.confirmation_timeframe is not None:
+                raise ValueError(
+                    "strategy.primary_timeframe = 1Day requires "
+                    "strategy.confirmation_timeframe = null"
+                )
         if self.execution.entry_order_type == "limit" and (
             self.execution.limit_entry_offset_bps is None
         ):

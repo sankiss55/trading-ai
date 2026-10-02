@@ -24,6 +24,8 @@ from domain.market.indicators import (
     bar_volumes,
     ema,
     ema_min_bars,
+    ibs,
+    ibs_min_bars,
     rsi,
     rsi_min_bars,
     sma,
@@ -188,6 +190,35 @@ def test_true_range_rejects_low_above_high() -> None:
 def test_atr_rejects_mismatched_lengths() -> None:
     with pytest.raises(IndicatorInputError):
         atr([10, 11], [9], [9.5, 10], 1)
+
+
+# --------------------------------------------------------------------------- IBS
+
+
+def test_ibs_reference_values() -> None:
+    # (9.5-9)/(10-9) = 0.5; (12-10)/(12-10) = 1 (close at the high); (9-9)/(11-9) = 0;
+    # flat bar 5/5/5 -> None (no range); Decimal (100.1-100)/(100.5-100) = 0.2 (float).
+    highs: list[Numeric] = [10, 12, 11, 5, Decimal("100.5")]
+    lows: list[Numeric] = [9, 10, 9, 5, Decimal("100")]
+    closes: list[Numeric] = [9.5, 12, 9, 5, Decimal("100.1")]
+    _assert_series(ibs(highs, lows, closes), [0.5, 1.0, 0.0, N, 0.2])
+    assert ibs_min_bars() == 1
+
+
+def test_ibs_rejects_invalid_input() -> None:
+    with pytest.raises(IndicatorInputError):
+        ibs([10], [11], [10])  # low above high
+    with pytest.raises(IndicatorInputError):
+        ibs([10, 11], [9], [9.5, 10])  # mismatched lengths
+    with pytest.raises(IndicatorInputError, match=r"closes\[0\] must be a number"):
+        ibs([10], [9], [None])  # type: ignore[list-item]
+
+
+def test_ibs_uses_only_its_own_bar() -> None:
+    highs, lows, closes = [10, 12, 11], [9, 10, 9], [9.5, 11, 10]
+    first = ibs(highs, lows, closes)
+    assert ibs(highs[:2], lows[:2], closes[:2]) == first[:2]
+    assert ibs([*highs[:2], 20], [*lows[:2], 1], [*closes[:2], 2])[:2] == first[:2]
 
 
 # --------------------------------------------------------------------------- volume average

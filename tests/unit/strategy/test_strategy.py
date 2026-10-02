@@ -190,6 +190,50 @@ def test_required_warmup_bars() -> None:
     assert required_warmup_bars(deeper) == 7
 
 
+def test_optional_indicators_leave_the_warm_up_unchanged_until_set() -> None:
+    explicit = params_dict()
+    explicit["indicators"] |= {"sma_short_period": None, "sma_long_period": None}
+    assert required_warmup_bars(StrategyParams.model_validate(explicit)) == 5
+    longer = params_dict()
+    longer["indicators"] |= {"sma_short_period": 2, "sma_long_period": 8}
+    assert required_warmup_bars(StrategyParams.model_validate(longer)) == 8
+
+
+@pytest.mark.parametrize(
+    ("series", "param"), [("sma_short", "sma_short_period"), ("sma_long", "sma_long_period")]
+)
+def test_rule_on_an_unset_optional_indicator_is_a_config_error(series: str, param: str) -> None:
+    for section in ("entry_rules", "no_trade_rules", "exit_rules"):
+        data = params_dict()
+        data[section] = [*data[section], rule("RULE_SMA_01", s("close"), ">", s(series))]
+        with pytest.raises(ValidationError, match=f"RULE_SMA_01 -> strategy.indicators.{param}"):
+            StrategyParams.model_validate(data)
+    data = params_dict(entry_rules=[rule("RULE_SMA_01", s("close"), ">", s(series))])
+    data["indicators"][param] = 3
+    assert pending_strategy_params(StrategyParams.model_validate(data)) == ()
+
+
+def test_ibs_rule_needs_no_indicator_period() -> None:
+    strategy = make_strategy(entry_rules=[rule("ENTRY_IBS_01", s("ibs"), "<", {"const": "0.9"})])
+    decision = _entry(strategy, uptrend_bars())
+    assert decision.action is StrategyAction.BUY
+    assert decision.rule_results[0].values["ibs[-1]"] is not None
+
+
+def test_entry_signal_expiry_can_be_set_by_the_caller() -> None:
+    strategy = make_strategy()
+    context = strategy.build_context(uptrend_bars())
+    expires = CREATED_AT + timedelta(hours=20)
+    decision = strategy.evaluate_entry(
+        context, bars_since_last_exit=None, created_at_utc=CREATED_AT, expires_at_utc=expires
+    )
+    assert decision.signal is not None
+    assert decision.signal.expires_at_utc == expires
+    default = strategy.evaluate_entry(context, bars_since_last_exit=None, created_at_utc=CREATED_AT)
+    assert default.signal is not None
+    assert default.signal.expires_at_utc == default.signal.bar_end_utc + timedelta(seconds=120)
+
+
 # --------------------------------------------------------------------------- entries
 
 

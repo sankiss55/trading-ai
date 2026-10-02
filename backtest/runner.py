@@ -23,6 +23,29 @@ Loop per session (all decisions use data up to the bar being decided, sec. 45.2.
    ``broker.close_session()`` (DAY orders expire). Exits requested while the market is
    closed are deferred to the next open (a DAY market order would only expire).
 
+Daily primary timeframe (``1Day``, ``holding_mode = swing``): the loop iterates
+SESSIONS, not minutes. The daily bars of each symbol are read once from
+``HistoricalFeed.get_daily_bars`` up to the last simulated session and each session uses
+only its own bar, re-stamped to ``[open, close)`` by
+:func:`domain.market.session.session_bar` (an EMPTY bar when a symbol has none, so
+elapsed sessions are still counted). Per session:
+
+1. Clock to the session open; deferred system exits of symbols with a priced bar are
+   submitted (cancel legs, market sell).
+2. ``broker.process_bar`` for each symbol (by symbol): fills of the orders submitted the
+   previous evening at the open plus slippage, then the GTC legs stop first on the
+   bar's high/low (a gap through the stop fills at ``open * (1 - slippage)``).
+3. Clock to ``close + grace``; limit entries older than ``entry_timeout_seconds``
+   (i.e. unfilled during their session) are canceled; ``on_closed_bar`` for each
+   symbol: entries become GTC brackets and exits are deferred, so both execute at the
+   NEXT session open.
+4. ``broker.close_session()`` (GTC orders survive, positions are held overnight) and one
+   equity sample at the close.
+
+The warm-up is the ``window_size`` sessions (``>= history_warmup_bars >=
+required_warmup_bars``) before the window start, so a window starts with the same full
+indicator window as a continuous run.
+
 Periods: one continuous simulation over ``[start_date, end_date]`` (warm-up bars before
 ``start_date`` are fed to the indicators only). In-sample / out-of-sample and
 walk-forward windows are evaluated on that single run. There are no optimisable
@@ -57,12 +80,12 @@ import hashlib
 import math
 import os
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from itertools import groupby
+from itertools import groupby, pairwise
 from pathlib import Path
 from typing import Final, Literal
 
@@ -97,7 +120,12 @@ from backtest.report import (
     continuation_check,
 )
 from domain.errors import NonRetryableError
-from domain.market.session import SessionWindows, compute_session_windows
+from domain.market.session import (
+    SessionWindows,
+    compute_session_windows,
+    empty_session_bar,
+    session_bar,
+)
 from domain.models import (
     Bar,
     BracketOrderRequest,
@@ -108,6 +136,7 @@ from domain.models import (
     OrderType,
     SessionDay,
     SimpleOrderRequest,
+    Timeframe,
     TimeInForce,
     TradeUpdateEvent,
 )
@@ -243,6 +272,7 @@ class _Simulator:
         self._config = config
         self._holding = holding
         self._symbols = tuple(whitelist)
+        self._feed = feed
         self._commission = commission_per_fill
         self._trading = tuple(s for s in data.sessions if start <= s.session_date <= end)
         if not self._trading:
@@ -251,9 +281,15 @@ class _Simulator:
             )
         strategy = Strategy(config.strategy, strategy_version=config.strategy_version)
         primary = strategy.params.primary_timeframe
-        if primary is None or primary.minutes is None:
+        self._daily = primary is Timeframe.DAY_1
+        if primary is None or (primary.minutes is None and not self._daily):
             raise NonRetryableError(
-                "the Phase 1 backtest supports intraday primary timeframes only",
+                "the Phase 1 backtest supports intraday primary timeframes and 1Day only",
+                code="UNSUPPORTED_TIMEFRAME",
+            )
+        if self._daily and holding is not HoldingMode.SWING:
+            raise NonRetryableError(
+                "a 1Day primary timeframe requires holding_mode swing",
                 code="UNSUPPORTED_TIMEFRAME",
             )
         # The clock starts at the first stored session and only moves forward.
@@ -290,10 +326,18 @@ class _Simulator:
             clock=self._clock,
             broker=self._broker,
         )
-        per_session = _REGULAR_SESSION_MINUTES // primary.minutes
-        warmup_count = math.ceil(self._flow.window_size / per_session) + 1
+        if primary.minutes is None:  # 1Day: one bar per session
+            warmup_count = self._flow.window_size
+        else:
+            per_session = _REGULAR_SESSION_MINUTES // primary.minutes
+            warmup_count = math.ceil(self._flow.window_size / per_session) + 1
         earlier = [s for s in data.sessions if s.session_date < start]
         self._warmup = tuple(earlier[-warmup_count:])
+        self._next_session: Mapping[date, SessionDay] = (
+            {a.session_date: b for a, b in pairwise(data.sessions)} if self._daily else {}
+        )
+        self._daily_bars: dict[str, dict[date, Bar]] = {}
+        self._registered: date | None = None
         self._tif = TimeInForce.DAY if holding is HoldingMode.INTRADAY else TimeInForce.GTC
         self._entry_timeout = timedelta(seconds=config.execution.entry_timeout_seconds)
         self._open: dict[str, _OpenTrade] = {}
@@ -311,13 +355,21 @@ class _Simulator:
     # ------------------------------------------------------------------ driver
 
     async def run(self) -> SimulationResult:
+        if self._daily:
+            await self._load_daily_bars()
         for session in self._warmup:
-            await self._warmup_session(session)
+            if self._daily:
+                self._warmup_daily_session(session)
+            else:
+                await self._warmup_session(session)
         for session in self._trading:
             stored = await self._calendar.get_session(session.session_date)
             if stored is None:  # pragma: no cover - sessions come from the same calendar
                 raise NonRetryableError("calendar lost a session", code="INVALID_CALENDAR")
-            await self._trade_session(stored)
+            if self._daily:
+                await self._trade_daily_session(stored)
+            else:
+                await self._trade_session(stored)
         counters = self._counters
         return SimulationResult(
             trades=tuple(self._closed),
@@ -403,6 +455,87 @@ class _Simulator:
         self._drain()
         if self._holding is HoldingMode.INTRADAY and await self._broker.get_positions():
             self._counters.sessions_with_position_after_close += 1
+        await self._sample_equity()
+
+    # ------------------------------------------------------------------ daily sessions
+
+    async def _load_daily_bars(self) -> None:
+        """Daily bars by symbol and label date, read once up to the last session.
+
+        Bars labelled after the last simulated session are never read, and each session
+        uses only the bar of its own date (no lookahead, sec. 45.2.8).
+
+        Raises:
+            NonRetryableError: ``DUPLICATE_BAR`` for two daily bars of one date.
+        """
+        sessions = (*self._warmup, *self._trading)
+        first, last = sessions[0].session_date, sessions[-1].session_date
+        for symbol in self._symbols:
+            by_date: dict[date, Bar] = {}
+            for bar in await self._data.feed.get_daily_bars(symbol, first, last):
+                day = bar.bar_start_utc.date()
+                if day in by_date:
+                    raise NonRetryableError(
+                        f"two {symbol} daily bars labelled {day.isoformat()}",
+                        code="DUPLICATE_BAR",
+                    )
+                by_date[day] = bar
+            self._daily_bars[symbol] = by_date
+
+    def _session_daily_bars(self, session: SessionDay) -> list[Bar]:
+        """The session's bar of every symbol (by symbol), stamped to ``[open, close)``."""
+        bars: list[Bar] = []
+        for symbol in self._symbols:
+            stored = self._daily_bars[symbol].get(session.session_date)
+            bars.append(
+                empty_session_bar(symbol, session, feed=self._feed)
+                if stored is None
+                else session_bar(stored, session)
+            )
+        bars.sort(key=lambda b: b.symbol)
+        return bars
+
+    def _register(self, session: SessionDay) -> None:
+        """Register ``session`` in the flow unless it already is (sessions only grow)."""
+        if self._registered is None or session.session_date > self._registered:
+            self._flow.add_session(session)
+            self._registered = session.session_date
+
+    def _warmup_daily_session(self, session: SessionDay) -> None:
+        self._clock.advance_to(session.open_utc)
+        self._register(session)
+        self._clock.advance_to(session.close_utc + self._grace + _ONE_SECOND)
+        for bar in self._session_daily_bars(session):
+            self._flow.record_closed_bar(bar)
+
+    async def _trade_daily_session(self, session: SessionDay) -> None:
+        self._clock.advance_to(session.open_utc)
+        self._register(session)
+        week = session.session_date.isocalendar()[:2]
+        if week != self._week:
+            self._week = (week[0], week[1])
+            self._week_start_equity = self._broker.equity()
+        bars = self._session_daily_bars(session)
+        priced = {bar.symbol for bar in bars if bar.close is not None}
+        for parent_id, reason in sorted(self._deferred.items()):
+            trade = self._open.get(parent_id)
+            if trade is None:
+                del self._deferred[parent_id]
+            elif trade.symbol in priced:  # no bar, no fill: keep it for the next open
+                del self._deferred[parent_id]
+                await self._system_exit(trade, reason)
+        for bar in bars:
+            self._broker.process_bar(bar)
+        self._drain()
+
+        self._clock.advance_to(session.close_utc + self._grace + _ONE_SECOND)
+        await self._expire_limit_entries()
+        following = self._next_session.get(session.session_date)
+        if following is not None:
+            self._register(following)  # the signals expire at its open
+        await self._decide(bars)
+        self._broker.close_session()
+        self._drain()
         await self._sample_equity()
 
     # ------------------------------------------------------------------ decisions

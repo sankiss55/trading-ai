@@ -70,17 +70,26 @@ def build_signal(
     created_at_utc: datetime,
     signal_ttl_seconds: int,
     rule_results: Sequence[RuleResult],
+    expires_at_utc: datetime | None = None,
 ) -> Signal:
     """Build the immutable :class:`~domain.models.Signal` of a BUY decision.
 
-    ``expires_at_utc = bar_end_utc + signal_ttl_seconds``.
+    ``expires_at_utc = bar_end_utc + signal_ttl_seconds`` (sec. 13.7) unless the caller
+    passes ``expires_at_utc`` (daily bars: the next session open plus the TTL; it may
+    not be before ``bar_end_utc``).
 
     Raises:
-        StrategyInputError: non-positive TTL, empty version or naive datetimes.
+        StrategyInputError: non-positive TTL, empty version, naive datetimes or an
+            explicit expiry before ``bar_end_utc``.
     """
     if isinstance(signal_ttl_seconds, bool) or signal_ttl_seconds <= 0:
         raise StrategyInputError(f"signal_ttl_seconds must be > 0, got {signal_ttl_seconds!r}")
     end = _utc(bar_end_utc, "bar_end_utc")
+    expires = end + timedelta(seconds=signal_ttl_seconds)
+    if expires_at_utc is not None:
+        expires = _utc(expires_at_utc, "expires_at_utc")
+        if expires < end:
+            raise StrategyInputError("expires_at_utc must not be before bar_end_utc")
     return Signal(
         signal_id=signal_id_for(
             strategy_version=strategy_version,
@@ -93,7 +102,7 @@ def build_signal(
         bar_start_utc=_utc(bar_start_utc, "bar_start_utc"),
         bar_end_utc=end,
         created_at_utc=_utc(created_at_utc, "created_at_utc"),
-        expires_at_utc=end + timedelta(seconds=signal_ttl_seconds),
+        expires_at_utc=expires,
         rule_results=tuple(rule_results),
         strategy_version=strategy_version,
     )

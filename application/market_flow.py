@@ -22,6 +22,22 @@ Flow per closed primary bar (sec. 13, 15.2, 16):
    ``evaluate_limits``. Any failure -> :class:`Rejected` with the failing codes; all
    pass -> :class:`EntryProposal`.
 
+Daily primary timeframe (``1Day``, strategy family v2; ``holding_mode = swing`` and no
+confirmation timeframe, enforced by the config cross rules):
+
+* There is no aggregator: the caller passes each closed daily bar, stamped to its
+  session with :func:`domain.market.session.session_bar`, straight to
+  :meth:`MarketFlow.on_closed_bar` after the session close (``on_minute_bar`` refuses
+  minute bars, ``on_clock`` closes nothing). Indicators and the ATR stop use daily bars.
+* Entry window: the decision is taken after the close and the entry is valid until the
+  NEXT session open. The signal expires at ``next session open + signal_ttl_seconds``
+  (instead of ``bar_end + signal_ttl_seconds``, sec. 13.7; declared in DECISIONS.md),
+  so the next session must be registered before deciding (``SESSION_UNKNOWN``
+  otherwise); a decision before the bar's close is ``OUTSIDE_ENTRY_WINDOW``. The
+  intraday window of sec. 11.4 (``no_entry_*``, flatten) does not apply.
+* Time stop and cooldown count daily bars (sessions). Exits are :class:`ExitRequest`
+  as for intraday; the caller executes them at the next open.
+
 Time comes only from ``IClock``; account and positions only from ``IBroker`` (the
 broker is the source of truth). Values the live system will read from the database
 (week-start and peak equity, pending entries, recorded stops, entry/exit times) are
@@ -33,7 +49,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Final, Literal
 
@@ -55,6 +71,7 @@ from domain.models import (
     Signal,
     StrategyAction,
     Symbol,
+    Timeframe,
     UtcDatetime,
 )
 from domain.ports import IBroker, IClock
@@ -230,9 +247,9 @@ BarOutcome = NoAction | Hold | ExitRequest | Rejected | EntryProposal
 class MarketFlow:
     """Stateful market-flow use cases for one strategy and one whitelist.
 
-    State: one aggregator per used timeframe, a bounded window of closed bars per
-    symbol and timeframe, and the registered sessions. It is deterministic: no wall
-    clock, no randomness.
+    State: one aggregator per used intraday timeframe (none for a ``1Day`` primary), a
+    bounded window of closed bars per symbol and timeframe, and the registered sessions.
+    It is deterministic: no wall clock, no randomness.
 
     Args:
         strategy: Built strategy (all its OWNER_DECISIONs set).
@@ -265,13 +282,22 @@ class MarketFlow:
         self._broker = broker
         self._primary = primary
         self._confirmation = strategy_params.confirmation_timeframe
+        self._daily = primary is Timeframe.DAY_1
+        if self._daily and self._confirmation is not None:
+            raise NonRetryableError(
+                "a 1Day primary timeframe takes no confirmation timeframe",
+                code="CONFIG_INVALID",
+            )
+        self._signal_ttl = timedelta(seconds=strategy_params.signal_ttl_seconds or 0)
         grace = float(params.bar_close_grace_seconds)
-        self._primary_agg = BarAggregator(
-            timeframe=primary,
-            symbols=params.symbols,
-            feed=params.feed,
-            bar_close_grace_seconds=grace,
-        )
+        self._primary_agg: BarAggregator | None = None
+        if not self._daily:
+            self._primary_agg = BarAggregator(
+                timeframe=primary,
+                symbols=params.symbols,
+                feed=params.feed,
+                bar_close_grace_seconds=grace,
+            )
         self._confirm_agg = (
             None
             if self._confirmation is None
@@ -293,6 +319,7 @@ class MarketFlow:
             s: deque(maxlen=size) for s in params.symbols
         }
         self._sessions: list[SessionDay] = []
+        self._session_opens: list[datetime] = []
         self._session_closes: list[datetime] = []
 
     # ------------------------------------------------------------------ accessors
@@ -309,19 +336,43 @@ class MarketFlow:
     # ------------------------------------------------------------------ sessions
 
     def add_session(self, session: SessionDay) -> None:
-        """Register the next calendar session before any of its minutes arrive."""
-        self._primary_agg.add_session(session)
+        """Register the next calendar session before any of its minutes arrive.
+
+        With a ``1Day`` primary, register it before its daily bar is decided and, before
+        deciding, the session after it (the signal expires at its open).
+
+        Raises:
+            NonRetryableError: code ``SESSION_OUT_OF_ORDER`` (aggregator error for
+                intraday primaries) when the session does not start after the previous
+                one closes.
+        """
+        if self._primary_agg is not None:
+            self._primary_agg.add_session(session)
+        elif self._sessions and session.open_utc < self._sessions[-1].close_utc:
+            raise NonRetryableError(
+                f"session {session.session_date} must start after the previous session "
+                f"{self._sessions[-1].session_date} closes",
+                code="SESSION_OUT_OF_ORDER",
+            )
         if self._confirm_agg is not None:
             self._confirm_agg.add_session(session)
         self._sessions.append(session)
+        self._session_opens.append(session.open_utc)
         self._session_closes.append(session.close_utc)
 
     def session_of(self, instant: datetime) -> SessionDay | None:
         """Registered session containing ``instant`` (``open <= instant < close``)."""
-        for session in reversed(self._sessions):
-            if session.open_utc <= instant < session.close_utc:
-                return session
+        # Sessions are registered in order and disjoint (add_session refuses anything
+        # else): only the last session opening at or before ``instant`` can contain it.
+        index = bisect_right(self._session_opens, instant) - 1
+        if index >= 0 and instant < self._sessions[index].close_utc:
+            return self._sessions[index]
         return None
+
+    def _session_after(self, instant: datetime) -> SessionDay | None:
+        """First registered session opening after ``instant``."""
+        index = bisect_right(self._session_opens, instant)
+        return self._sessions[index] if index < len(self._sessions) else None
 
     # ------------------------------------------------------------------ on_minute_bar
 
@@ -333,8 +384,18 @@ class MarketFlow:
         are stored internally (before the primary bars are returned, so a confirmation
         bar closing at the same instant is visible to the primary decision).
         Duplicates and late bars are reported in ``ingest`` and close nothing.
+
+        Raises:
+            NonRetryableError: code ``UNSUPPORTED_TIMEFRAME`` with a ``1Day`` primary
+                (daily bars are not aggregated from minutes).
         """
-        ingest = self._primary_agg.ingest(bar)
+        primary_agg = self._primary_agg
+        if primary_agg is None:
+            raise NonRetryableError(
+                "1Day primary timeframe: closed daily bars go straight to on_closed_bar",
+                code="UNSUPPORTED_TIMEFRAME",
+            )
+        ingest = primary_agg.ingest(bar)
         closed = list(ingest.closed_bars)
         if self._confirm_agg is not None:
             self._store_confirmation(self._confirm_agg.ingest(bar).closed_bars)
@@ -345,8 +406,11 @@ class MarketFlow:
     def on_clock(self) -> tuple[Bar, ...]:
         """Close buckets by time at ``clock.now_utc()`` (call on every clock step).
 
-        Returns the closed primary bars, sorted by ``(bar_start_utc, symbol)``.
+        Returns the closed primary bars, sorted by ``(bar_start_utc, symbol)``; always
+        empty with a ``1Day`` primary (nothing is aggregated).
         """
+        if self._primary_agg is None:
+            return ()
         now = self._clock.now_utc()
         if self._confirm_agg is not None:
             self._store_confirmation(self._confirm_agg.on_time(now))
@@ -368,13 +432,32 @@ class MarketFlow:
 
         Raises:
             NonRetryableError: code ``INVALID_BAR`` for a bar of another timeframe or an
-                unknown symbol.
+                unknown symbol, or a daily bar not stamped to a registered session;
+                ``FEED_MISMATCH`` for a daily bar of another feed than ``params.feed``.
         """
         if bar.timeframe is not self._primary or bar.symbol not in self._windows:
             raise NonRetryableError(
                 f"{bar.symbol} {bar.timeframe} is not a primary bar of the whitelist",
                 code="INVALID_BAR",
             )
+        if self._daily:
+            session = self.session_of(bar.bar_start_utc)
+            if (
+                session is None
+                or bar.bar_start_utc != session.open_utc
+                or bar.bar_end_utc != session.close_utc
+            ):
+                raise NonRetryableError(
+                    f"{bar.symbol} daily bar {bar.bar_start_utc.isoformat()} is not stamped "
+                    "to a registered session (domain.market.session.session_bar)",
+                    code="INVALID_BAR",
+                )
+            if bar.feed is not self._params.feed:  # sec. 10.2.2: same feed live/backtest
+                raise NonRetryableError(
+                    f"{bar.symbol} daily bar from feed {bar.feed.value}, the strategy feed is "
+                    f"{self._params.feed.value}",
+                    code="FEED_MISMATCH",
+                )
         window = self._windows[bar.symbol]
         if window and bar.bar_start_utc <= window[-1].bar_start_utc:
             return False
@@ -423,10 +506,16 @@ class MarketFlow:
             context,
             bars_since_last_exit=None if last_exit is None else count_bars_since(window, last_exit),
             created_at_utc=now,
+            expires_at_utc=self._daily_expiry(bar) if self._daily else None,
         )
         if decision.action is not StrategyAction.BUY or decision.signal is None:
             return NoAction(symbol=symbol, reason=NO_SIGNAL, decision=decision)
         return await self._price_entry(bar, decision, decision.signal, context.latest_atr(), book)
+
+    def _daily_expiry(self, bar: Bar) -> datetime | None:
+        """Daily signal expiry: next session open + TTL (``None`` if not registered)."""
+        following = self._session_after(bar.bar_start_utc)
+        return None if following is None else following.open_utc + self._signal_ttl
 
     def _sessions_covering(self, since: datetime) -> tuple[SessionDay, ...]:
         """Sessions overlapping the window plus the one before (``gap_pct``)."""
@@ -454,9 +543,16 @@ class MarketFlow:
         session = self.session_of(bar.bar_start_utc)
         if session is None:
             return rejected((SESSION_UNKNOWN,))
-        windows = compute_session_windows(session, self._params.session)
-        if not windows.is_entry_window(now) or windows.is_flatten_time(now):
-            return rejected((OUTSIDE_ENTRY_WINDOW,))
+        if self._daily:
+            # Decided after the close; valid until the next session open (+ TTL).
+            if self._session_after(bar.bar_start_utc) is None:
+                return rejected((SESSION_UNKNOWN,))
+            if now < bar.bar_end_utc:
+                return rejected((OUTSIDE_ENTRY_WINDOW,))
+        else:
+            windows = compute_session_windows(session, self._params.session)
+            if not windows.is_entry_window(now) or windows.is_flatten_time(now):
+                return rejected((OUTSIDE_ENTRY_WINDOW,))
         if now > signal.expires_at_utc:
             return rejected((SIGNAL_EXPIRED,))
         if atr is None or bar.close is None:

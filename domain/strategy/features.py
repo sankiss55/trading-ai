@@ -20,7 +20,13 @@ gap_pct    ``abs(open_today - close_yesterday) / close_yesterday`` (Decimal), co
            bar's session and ``close_yesterday`` the close of the last priced bar of the
            previous session in ``sessions``. ``None`` when the bar is outside every given
            session, when the previous session has no priced bar in the input, or when no
-           sessions are passed. Meaningful for intraday timeframes only.
+           sessions are passed. On daily bars (one bar per session) it is the overnight
+           gap of the day.
+ibs        ``ibs(highs, lows, closes)``: internal bar strength
+           ``(close - low) / (high - low)`` of the same bar (float, ``None`` when
+           ``high == low``)
+sma_short  ``sma(closes, indicators.sma_short_period)``; optional period
+sma_long   ``sma(closes, indicators.sma_long_period)``; optional period
 ========== ============================================================================
 
 Indicators come exclusively from :mod:`domain.market.indicators` (sec. 14.5, never
@@ -30,6 +36,8 @@ EMPTY bars (sec. 10.3.4) carry no prices and are **excluded** before any series 
 computed: offset ``-1`` is the last *priced* bar. INCOMPLETE bars carry prices and are
 included. An indicator whose period is ``None`` yields an all-``None`` series; the
 strategy refuses to start when a rule needs such a series (OWNER_DECISION pending).
+``sma_short_period`` / ``sma_long_period`` are optional (default ``None`` = not used);
+a rule referencing their series while the period is ``None`` is a configuration error.
 """
 
 from __future__ import annotations
@@ -57,9 +65,12 @@ from domain.market.indicators import (
     bar_volumes,
     ema,
     ema_min_bars,
+    ibs,
     rsi,
     rsi_min_bars,
     shared_run,
+    sma,
+    sma_min_bars,
     volume_average,
     volume_average_min_bars,
 )
@@ -90,19 +101,28 @@ SERIES_PERIOD_PARAM: Mapping[str, str] = MappingProxyType(
         "atr": "atr_period",
         "atr_pct": "atr_period",
         "volume_avg": "volume_avg_period",
+        "sma_short": "sma_short_period",
+        "sma_long": "sma_long_period",
     }
 )
 """Base series -> ``strategy.indicators`` parameter it depends on."""
 
 
 class IndicatorParams(DomainModel):
-    """``strategy.indicators`` of config.yaml. ``None`` = OWNER_DECISION pending."""
+    """``strategy.indicators`` of config.yaml. ``None`` = OWNER_DECISION pending.
+
+    ``sma_short_period`` and ``sma_long_period`` are optional keys (default ``None`` =
+    the indicator is not used), so configurations written before they existed load
+    unchanged.
+    """
 
     ema_fast: int | None = Field(ge=1)
     ema_slow: int | None = Field(ge=1)
     rsi_period: int | None = Field(ge=1)
     atr_period: int | None = Field(ge=1)
     volume_avg_period: int | None = Field(ge=1)
+    sma_short_period: int | None = Field(default=None, ge=1)
+    sma_long_period: int | None = Field(default=None, ge=1)
 
     def min_bars(self, param: str) -> int:
         """Bars needed before the first non-``None`` value of the indicator ``param``.
@@ -118,6 +138,8 @@ class IndicatorParams(DomainModel):
             return atr_min_bars(period)
         if param == "volume_avg_period":
             return volume_average_min_bars(period)
+        if param in ("sma_short_period", "sma_long_period"):
+            return sma_min_bars(period)
         return ema_min_bars(period)
 
 
@@ -331,7 +353,9 @@ def _build_feature_frame(
     atr_of: Callable[[int], IndicatorSeries]
     ema_of: Callable[[int], IndicatorSeries]
     rsi_of: Callable[[int], IndicatorSeries]
+    sma_of: Callable[[int], IndicatorSeries]
     volume_avg_of: Callable[[int], IndicatorSeries]
+    ibs_values: IndicatorSeries
     if inputs is None:
         closes = bar_closes(priced)
         highs = bar_highs(priced)
@@ -341,13 +365,17 @@ def _build_feature_frame(
         close_floats = None
         atr_of = partial(atr, highs, lows, closes)
         ema_of, rsi_of = partial(ema, closes), partial(rsi, closes)
+        sma_of = partial(sma, closes)
         volume_avg_of = partial(volume_average, volumes)
+        ibs_values = ibs(highs, lows, closes)
     else:
         closes, highs, lows, volumes = inputs.closes, inputs.highs, inputs.lows, inputs.volumes
         opens = inputs.opens
         close_floats = inputs.close_floats
         atr_of, ema_of, rsi_of = inputs.atr, inputs.ema, inputs.rsi
+        sma_of = inputs.sma
         volume_avg_of = inputs.volume_average
+        ibs_values = inputs.ibs()
 
     def maybe(
         period: int | None, compute: Callable[[int], IndicatorSeries]
@@ -371,6 +399,9 @@ def _build_feature_frame(
         "volume_avg": maybe(periods.volume_avg_period, volume_avg_of),
         "atr_pct": atr_pct,
         "gap_pct": _gap_series(priced, sessions) if sessions else (None,) * size,
+        "ibs": ibs_values,
+        "sma_short": maybe(periods.sma_short_period, sma_of),
+        "sma_long": maybe(periods.sma_long_period, sma_of),
     }
     if set(series) != set(SERIES_BASE_NAMES):  # internal invariant, keeps the two in sync
         raise StrategyConfigError(f"feature series out of sync: {sorted(series)}")

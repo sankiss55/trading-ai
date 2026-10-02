@@ -1,0 +1,151 @@
+# TEST FIXTURE ONLY — not owner decisions, not trading advice.
+# Daily swing configuration (strategy family v2 engine path: primary 1Day, swing, no
+# confirmation timeframe) used to exercise the daily backtest on SYNTHETIC bars built by
+# the tests. Every OWNER_DECISION value below is a fixture value; none may be copied
+# into config.yaml or research/configs. Numbers are unquoted on purpose: the config
+# loader parses YAML floats as Decimal.
+
+config_version: "2.0.0-fixture-daily"
+strategy_version: "fixture-daily-0.1.0"
+risk_version: "fixture-0.1.0"
+prompt_version: "1"
+
+system:
+  timezone_internal: "UTC"
+  timezone_market: "America/New_York"
+  db_path: "data/test/trading.db"
+  log_dir: "logs/test"
+  control_stop_file: "control/STOP"
+  control_poll_seconds: 5
+  max_clock_skew_seconds: 2
+  queue_max_size: 100
+
+universe:
+  whitelist: ["AAA", "BBB"]
+  blacklist: []
+  min_price: 1
+  max_price: 10000
+  min_avg_daily_volume: 1000
+  liquidity_feed: "sip"
+  avg_volume_lookback_days: 20
+  max_spread_bps: 50
+
+market_data:
+  feed: "sip"                     # daily strategy bars (family v2: SIP daily)
+  adjustment: "split"
+  max_bar_age_seconds: 90
+  bar_close_grace_seconds: 10
+  history_warmup_bars: 20         # >= required_warmup_bars (ATR 14, SMA 10)
+
+session:
+  allow_premarket: false
+  allow_after_hours: false
+  no_entry_first_minutes: 15      # no effect on a 1Day strategy (still a required key)
+  no_entry_last_minutes: 30       # no effect on a 1Day strategy (still a required key)
+
+strategy:
+  holding_mode: "swing"
+  flatten_minutes_before_close: null
+  primary_timeframe: "1Day"
+  confirmation_timeframe: null
+  signal_ttl_seconds: 120         # 1Day: the signal expires at the next open + 120 s
+  cooldown_bars: 0
+  min_minutes_per_bar: 1          # no effect on COMPLETE daily bars
+  indicators:
+    ema_fast: null
+    ema_slow: null
+    rsi_period: 2
+    atr_period: 14
+    volume_avg_period: null
+    sma_short_period: 5
+    sma_long_period: 10
+  entry_rules:
+    - {rule_id: ENTRY_IBS_01, timeframe: primary, left: {series: ibs}, op: "<", right: {const: 0.2}}
+  no_trade_rules: []
+  exit_rules:
+    - {rule_id: EXIT_IBS_01, timeframe: primary, left: {series: ibs}, op: ">", right: {const: 0.8}}
+  no_trade_thresholds: {}
+  exit:
+    stop_method: "atr"
+    stop_atr_multiplier: 3
+    take_profit_r_multiple: 10
+    time_stop_bars: 5
+    exit_on_signal_reversal: true
+    min_tp_distance_ticks: 2
+
+risk:
+  risk_per_trade_pct: 0.01
+  max_daily_loss_pct: 0.03
+  max_weekly_loss_pct: 0.06
+  max_drawdown_pct: 0.20
+  max_positions: 3
+  max_total_exposure_pct: 0.99
+  max_symbol_exposure_pct: 0.33
+  max_aggregate_open_risk_pct: 0.04
+  slippage_buffer_bps: 5
+  min_qty: 1
+
+execution:
+  entry_order_type: "market"
+  limit_entry_offset_bps: null
+  entry_timeout_seconds: 30
+  max_order_rejections_per_day: 3
+  flatten_retry_seconds: 60
+  reconcile_interval_seconds: 60
+
+ai:
+  provider: "claude_cli"
+  cli_command: "claude"
+  cli_max_concurrency: 1
+  model_id: "fixture-model"
+  effort: null
+  max_output_tokens: 1024
+  request_timeout_seconds: 30
+  max_retries: 2
+  on_unavailable: "block"
+  snapshot_bars_primary: 30
+  snapshot_bars_confirmation: 0
+  recent_outcomes_limit: 5
+  max_rationale_chars: 500
+  benchmark_symbol: "AAA"
+  include_news: false
+  max_headlines: 5
+  max_calls_per_day: 0
+  max_cost_usd_per_day: 0
+  max_cost_usd_per_month: 0
+  pricing:
+    input_per_mtok_usd: 2.00
+    output_per_mtok_usd: 10.00
+    cache_write_per_mtok_usd: null
+    cache_read_per_mtok_usd: null
+
+notifications:
+  policy: "daily_only"
+  daily_summary_time_et: "16:30"
+  error_digest_minutes: 30
+
+retention:
+  market_bars_days: 30
+  ai_snapshots_days: 30
+  logs_days: 30
+
+backtest:
+  start_date: 2025-03-03
+  end_date: 2025-06-30
+  out_of_sample_start: 2025-05-01
+  walk_forward_train_months: 1
+  walk_forward_test_months: 1
+  min_expectancy_r: 0.1
+  min_profit_factor: 1.2
+  max_drawdown_pct: 0.20
+  min_trades_out_of_sample: 5
+
+paper:
+  min_paper_trading_days: 20
+  min_shadow_signals: 30
+  min_expectancy_improvement_r: 0.05
+  min_valid_ai_response_rate: 0.95
+
+backups:
+  frequency: "daily"
+  retention_days: 30

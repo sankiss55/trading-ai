@@ -10,8 +10,9 @@ arithmetic: operands are one of
   ``{"param": "rsi_overbought"}``.
 
 The only derived quantities needed by sec. 13.5 are exposed as named series computed by
-``domain/strategy/features.py`` (``atr_pct = atr / close`` and
-``gap_pct = abs(open_today - close_yesterday) / close_yesterday``), never as expressions.
+``domain/strategy/features.py`` (``atr_pct = atr / close``,
+``gap_pct = abs(open_today - close_yesterday) / close_yesterday`` and the internal bar
+strength ``ibs = (close - low) / (high - low)``), never as expressions.
 
 Series names and timeframes:
 
@@ -92,6 +93,9 @@ SERIES_BASE_NAMES: Final[tuple[str, ...]] = (
     "volume_avg",
     "atr_pct",
     "gap_pct",
+    "ibs",
+    "sma_short",
+    "sma_long",
 )
 """Series computed per timeframe by ``domain/strategy/features.py``."""
 

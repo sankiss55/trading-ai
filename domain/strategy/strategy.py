@@ -172,6 +172,21 @@ class StrategyParams(DomainModel):
         )
         if unknown:
             raise ValueError(f"rules reference unknown no_trade_thresholds: {unknown}")
+        unset = sorted(
+            {
+                f"{rule.rule_id} -> strategy.indicators.{param}"
+                for rule in rules
+                for _, base in rule.resolved_series()
+                if (param := SERIES_PERIOD_PARAM.get(base)) is not None
+                and not IndicatorParams.model_fields[param].is_required()
+                and getattr(self.indicators, param) is None
+            }
+        )
+        if unset:
+            raise ValueError(
+                "rules reference optional indicators whose period is not set "
+                f"(null = indicator not used): {unset}"
+            )
         minutes = self.primary_timeframe.minutes if self.primary_timeframe else None
         if (
             minutes is not None
@@ -242,7 +257,8 @@ def required_warmup_bars(params: StrategyParams) -> int:
     """Primary bars needed before every active rule can produce a non-``None`` value.
 
     ``max(min_bars of each configured indicator) + (max |offset| - 1)``; compare it with
-    ``market_data.history_warmup_bars`` (sec. 7.4.4).
+    ``market_data.history_warmup_bars`` (sec. 7.4.4). An indicator whose period is
+    ``None`` needs no bars, so the optional indicators leave existing configs unchanged.
     """
     periods = params.indicators
     longest = max(
@@ -448,6 +464,7 @@ class Strategy:
         *,
         bars_since_last_exit: int | None,
         created_at_utc: datetime,
+        expires_at_utc: datetime | None = None,
     ) -> StrategyDecision:
         """Decide ``BUY`` or ``NO_ACTION`` for a symbol without an open position.
 
@@ -456,6 +473,9 @@ class Strategy:
             bars_since_last_exit: Closed primary bars since the last exit of this symbol
                 (``None`` = no previous exit); see :func:`count_bars_since`.
             created_at_utc: Decision time (from ``IClock``), stored in the signal.
+            expires_at_utc: Signal expiry when the caller's timeframe defines it
+                differently from ``bar_end + signal_ttl_seconds`` (daily bars: the next
+                session open plus the TTL, see ``application.market_flow``).
 
         Raises:
             StrategyInputError: empty context, wrong timeframe or negative bar count.
@@ -501,6 +521,7 @@ class Strategy:
             created_at_utc=created_at_utc,
             signal_ttl_seconds=self._ttl,
             rule_results=results,
+            expires_at_utc=expires_at_utc,
         )
         return self._decision(bar, StrategyAction.BUY, results, signal=signal)
 

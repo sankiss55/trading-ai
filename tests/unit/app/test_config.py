@@ -304,6 +304,73 @@ def test_history_warmup_must_cover_the_longest_indicator() -> None:
         _parse(text)
 
 
+DAILY_CONFIG = ROOT / "tests" / "fixtures" / "config.daily.yaml"
+
+
+def _daily_text() -> str:
+    return DAILY_CONFIG.read_text(encoding="utf-8")
+
+
+def test_daily_swing_config_loads_without_pending_decisions() -> None:
+    config = load_config(DAILY_CONFIG).config
+    assert config.strategy.primary_timeframe is Timeframe.DAY_1
+    assert config.strategy.holding_mode is HoldingMode.SWING
+    assert config.strategy.confirmation_timeframe is None
+    assert config.strategy.indicators.sma_short_period == 5
+    assert config.strategy.indicators.sma_long_period == 10
+    assert pending_backtest_decisions(config) == ()
+    Strategy(config.strategy, strategy_version=config.strategy_version)
+
+
+def test_daily_primary_requires_swing() -> None:
+    text = _replace(_daily_text(), 'holding_mode: "swing"', 'holding_mode: "intraday"')
+    text = _replace(text, "flatten_minutes_before_close: null", "flatten_minutes_before_close: 5")
+    with pytest.raises(ConfigError, match=r"1Day requires strategy.holding_mode = swing"):
+        _parse(text)
+    pending = _replace(_daily_text(), 'holding_mode: "swing"', "holding_mode: null")
+    with pytest.raises(ConfigError, match=r"1Day requires strategy.holding_mode = swing"):
+        _parse(pending)
+
+
+def test_daily_primary_requires_no_confirmation_timeframe() -> None:
+    text = _replace(_daily_text(), "confirmation_timeframe: null", 'confirmation_timeframe: "1Day"')
+    with pytest.raises(ConfigError, match=r"1Day requires strategy.confirmation_timeframe = null"):
+        _parse(text)
+
+
+def test_daily_session_window_keys_stay_required() -> None:
+    text = _replace(_daily_text(), "no_entry_first_minutes: 15", "no_entry_first_minutes: null")
+    assert "session.no_entry_first_minutes" in pending_backtest_decisions(_parse(text))
+
+
+def test_optional_indicator_keys_default_to_unused() -> None:
+    config = _parse(_fixture_text())
+    assert config.strategy.indicators.sma_short_period is None
+    assert config.strategy.indicators.sma_long_period is None
+    assert required_warmup_bars(config.strategy) == 21  # unchanged: ema_slow 21
+
+
+def test_rule_on_an_unset_optional_indicator_is_a_config_error() -> None:
+    text = _replace(_daily_text(), "sma_long_period: 10", "sma_long_period: null")
+    text = _replace(
+        text,
+        "  no_trade_rules: []",
+        "  no_trade_rules:\n"
+        '    - {rule_id: NOTRADE_TREND, timeframe: primary, left: {series: close}, op: "<",'
+        " right: {series: sma_long}}",
+    )
+    with pytest.raises(ConfigError, match=r"NOTRADE_TREND -> strategy.indicators.sma_long_period"):
+        _parse(text)
+
+
+def test_optional_indicator_periods_count_for_the_warm_up() -> None:
+    text = _replace(_daily_text(), "sma_long_period: 10", "sma_long_period: 30")
+    with pytest.raises(ConfigError, match="history_warmup_bars"):
+        _parse(text)
+    text = _replace(text, "history_warmup_bars: 20", "history_warmup_bars: 30")
+    assert required_warmup_bars(_parse(text).strategy) == 30
+
+
 def test_reversal_enabled_without_exit_rules_is_pending() -> None:
     text = _fixture_text()
     start = text.index("  exit_rules:\n")

@@ -14,6 +14,14 @@ flatten_at              = session_close - flatten_minutes_before_close   (intrad
 Every parameter is passed explicitly. A parameter that is still ``None`` (an
 OWNER_DECISION not taken yet) raises :class:`OwnerDecisionPendingError`; the module
 never substitutes a default. Time is always passed in as data (``now_utc``).
+
+Daily bars (strategy family v2, ``primary_timeframe = 1Day``): the data feed labels a
+daily bar with a calendar instant (SIP: midnight America/New_York, i.e. 04:00Z/05:00Z;
+synthetic data: 00:00Z) and ``bar_end = start + 1 day``. :func:`session_bar` re-stamps it
+to the session it summarises, ``[open_utc, close_utc)``, so fills at the open, intrabar
+stops and the decision at the close get the real session instants (no lookahead: the
+bar is known only at the close). :func:`empty_session_bar` is the EMPTY bar of a session
+without a daily bar (sec. 10.3.4), so elapsed sessions are still counted.
 """
 
 from __future__ import annotations
@@ -22,19 +30,34 @@ from datetime import UTC, date, datetime, time, timedelta, tzinfo
 
 from pydantic import Field
 
-from domain.errors import DomainError
-from domain.models import DomainModel, HoldingMode, SessionDay, UtcDatetime
+from domain.errors import DomainError, NonRetryableError
+from domain.models import (
+    Bar,
+    BarStatus,
+    DataFeed,
+    DomainModel,
+    HoldingMode,
+    SessionDay,
+    Symbol,
+    Timeframe,
+    UtcDatetime,
+)
 
 __all__ = [
     "OWNER_DECISION_PENDING_CODE",
+    "SESSION_BAR_MISMATCH_CODE",
     "OwnerDecisionPendingError",
+    "SessionBarMismatchError",
     "SessionWindowParams",
     "SessionWindows",
     "compute_session_windows",
+    "empty_session_bar",
+    "session_bar",
     "session_day_from_market_times",
 ]
 
 OWNER_DECISION_PENDING_CODE = "OWNER_DECISION_PENDING"
+SESSION_BAR_MISMATCH_CODE = "SESSION_BAR_MISMATCH"
 
 
 class OwnerDecisionPendingError(DomainError):
@@ -155,4 +178,57 @@ def session_day_from_market_times(
         open_utc=open_utc,
         close_utc=close_utc,
         is_early_close=is_early_close,
+    )
+
+
+# --------------------------------------------------------------------------- daily bars
+
+
+class SessionBarMismatchError(NonRetryableError):
+    """A daily bar was paired with a session it does not belong to."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code=SESSION_BAR_MISMATCH_CODE)
+
+
+def session_bar(daily_bar: Bar, session: SessionDay) -> Bar:
+    """``daily_bar`` re-stamped to ``[session.open_utc, session.close_utc)``.
+
+    OHLCV, feed, status and ``minutes_present`` are kept. The bar's label date (the UTC
+    calendar date of ``bar_start_utc``; for a label at midnight America/New_York this is
+    the New York date) must be ``session.session_date`` and the label must not be after
+    the session open. A bar already stamped to ``session`` is returned unchanged in value.
+
+    Raises:
+        SessionBarMismatchError: not a ``1Day`` bar, or a bar of another date.
+    """
+    if daily_bar.timeframe is not Timeframe.DAY_1:
+        raise SessionBarMismatchError(
+            f"{daily_bar.symbol} bar has timeframe {daily_bar.timeframe}, expected 1Day"
+        )
+    label = daily_bar.bar_start_utc
+    if label.date() != session.session_date or label > session.open_utc:
+        raise SessionBarMismatchError(
+            f"{daily_bar.symbol} daily bar labelled {label.isoformat()} does not belong to "
+            f"the session of {session.session_date.isoformat()}"
+        )
+    return daily_bar.model_copy(
+        update={"bar_start_utc": session.open_utc, "bar_end_utc": session.close_utc}
+    )
+
+
+def empty_session_bar(symbol: Symbol, session: SessionDay, *, feed: DataFeed) -> Bar:
+    """EMPTY ``1Day`` bar of a session that has no daily bar for ``symbol``."""
+    return Bar(
+        symbol=symbol,
+        timeframe=Timeframe.DAY_1,
+        bar_start_utc=session.open_utc,
+        bar_end_utc=session.close_utc,
+        open=None,
+        high=None,
+        low=None,
+        close=None,
+        volume=0,
+        feed=feed,
+        status=BarStatus.EMPTY,
     )

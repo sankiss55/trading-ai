@@ -8,13 +8,24 @@ import pytest
 
 from domain.market.session import (
     OWNER_DECISION_PENDING_CODE,
+    SESSION_BAR_MISMATCH_CODE,
     OwnerDecisionPendingError,
+    SessionBarMismatchError,
     SessionWindowParams,
     compute_session_windows,
+    empty_session_bar,
+    session_bar,
     session_day_from_market_times,
 )
-from domain.models import HoldingMode
-from tests.unit.market.factories import EARLY_CLOSE_DAY, SUMMER_DAY
+from domain.models import Bar, BarStatus, DataFeed, HoldingMode, SessionDay, Timeframe
+from tests.unit.market.factories import (
+    EARLY_CLOSE_DAY,
+    SUMMER_DAY,
+    SUMMER_NEXT_DAY,
+    WINTER_DAY,
+    daily_bar,
+    minute_bar,
+)
 
 INTRADAY = SessionWindowParams(
     no_entry_first_minutes=15,
@@ -152,3 +163,58 @@ def test_session_day_from_market_times_with_zoneinfo_handles_dst() -> None:
     )
     assert summer.open_utc == datetime(2026, 6, 15, 13, 30, tzinfo=UTC)
     assert winter.open_utc == datetime(2026, 1, 12, 14, 30, tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------- daily bars
+
+
+def _labelled(day: date, hour: int) -> Bar:
+    bar = daily_bar(day, 1000)
+    start = datetime(day.year, day.month, day.day, hour, 0, tzinfo=UTC)
+    return bar.model_copy(update={"bar_start_utc": start, "bar_end_utc": start + timedelta(days=1)})
+
+
+@pytest.mark.parametrize(
+    ("session", "hour"),
+    [
+        (SUMMER_DAY, 4),  # SIP label: midnight New York in EDT
+        (WINTER_DAY, 5),  # SIP label: midnight New York in EST
+        (SUMMER_DAY, 0),  # synthetic label: 00:00Z of the session date
+        (EARLY_CLOSE_DAY, 5),
+    ],
+)
+def test_session_bar_restamps_a_daily_bar_to_its_session(session: SessionDay, hour: int) -> None:
+    raw = _labelled(session.session_date, hour)
+    stamped = session_bar(raw, session)
+    assert stamped.bar_start_utc == session.open_utc
+    assert stamped.bar_end_utc == session.close_utc
+    keep = ("symbol", "timeframe", "open", "high", "low", "close", "volume", "feed", "status")
+    assert {k: getattr(stamped, k) for k in keep} == {k: getattr(raw, k) for k in keep}
+    assert session_bar(stamped, session) == stamped  # already stamped: unchanged
+
+
+@pytest.mark.parametrize(
+    "label_day",
+    [SUMMER_DAY.session_date - timedelta(days=1), SUMMER_NEXT_DAY.session_date],
+)
+def test_session_bar_refuses_a_bar_of_another_date(label_day: date) -> None:
+    with pytest.raises(SessionBarMismatchError) as info:
+        session_bar(daily_bar(label_day, 1000), SUMMER_DAY)
+    assert info.value.code == SESSION_BAR_MISMATCH_CODE
+    assert SUMMER_DAY.session_date.isoformat() in str(info.value)
+
+
+def test_session_bar_refuses_a_label_after_the_open_and_non_daily_bars() -> None:
+    late = _labelled(SUMMER_DAY.session_date, 20)  # same UTC date, but after the open
+    with pytest.raises(SessionBarMismatchError):
+        session_bar(late, SUMMER_DAY)
+    with pytest.raises(SessionBarMismatchError, match="expected 1Day"):
+        session_bar(minute_bar(SUMMER_DAY.open_utc), SUMMER_DAY)
+
+
+def test_empty_session_bar() -> None:
+    bar = empty_session_bar("SPY", SUMMER_DAY, feed=DataFeed.SIP)
+    assert bar.timeframe is Timeframe.DAY_1
+    assert bar.status is BarStatus.EMPTY
+    assert (bar.bar_start_utc, bar.bar_end_utc) == (SUMMER_DAY.open_utc, SUMMER_DAY.close_utc)
+    assert (bar.open, bar.close, bar.volume, bar.feed) == (None, None, 0, DataFeed.SIP)

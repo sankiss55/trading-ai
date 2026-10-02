@@ -92,3 +92,38 @@ def test_build_signal_rejects_non_positive_ttl(ttl: int) -> None:
             signal_ttl_seconds=ttl,
             rule_results=(),
         )
+
+
+def test_build_signal_explicit_expiry_for_daily_bars() -> None:
+    """Daily bars expire at the next session open + TTL (passed in by the flow)."""
+    next_open = END + timedelta(hours=17, minutes=30)
+    signal = build_signal(
+        strategy_version="1.0.0",
+        symbol="SPY",
+        timeframe=Timeframe.DAY_1,
+        bar_start_utc=START,
+        bar_end_utc=END,
+        created_at_utc=END + timedelta(seconds=11),
+        signal_ttl_seconds=120,
+        rule_results=(),
+        expires_at_utc=next_open + timedelta(seconds=120),
+    )
+    assert signal.expires_at_utc == next_open + timedelta(seconds=120)
+    assert signal.signal_id == signal_id_for(
+        strategy_version="1.0.0", symbol="SPY", timeframe=Timeframe.DAY_1, bar_start_utc=START
+    )
+
+
+def test_build_signal_rejects_an_expiry_before_the_bar_end() -> None:
+    with pytest.raises(StrategyInputError, match="expires_at_utc"):
+        build_signal(
+            strategy_version="1.0.0",
+            symbol="SPY",
+            timeframe=Timeframe.DAY_1,
+            bar_start_utc=START,
+            bar_end_utc=END,
+            created_at_utc=END,
+            signal_ttl_seconds=120,
+            rule_results=(),
+            expires_at_utc=END - timedelta(seconds=1),
+        )

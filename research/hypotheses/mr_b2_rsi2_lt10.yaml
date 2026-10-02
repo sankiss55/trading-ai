@@ -1,0 +1,67 @@
+# Pre-registered hypothesis (research/README.md). Do not edit after the first trial:
+# a changed rule or config is a new trial and counts against the budget.
+id: mr_b2_rsi2_lt10
+family: "MR-B (Connors RSI(2))"
+title: "Connors RSI(2) < 10 pullback above the 200-day SMA"
+created_at: 2026-10-02
+status: registered
+rationale: |
+  Connors & Alvarez (2008) RSI(2) pullback rule: in a long-term uptrend (close above the
+  200-day SMA), buy a sharp 1-2 day oversold reading of the 2-period RSI and sell on the
+  first close above the 5-day SMA. It exploits the same short-term mean reversion of
+  index returns as MR-A (Baltussen, van Bekkum & Da 2019; Nagel 2012), restricted to
+  uptrends to avoid buying into bear markets. The thresholds 5 / 10 / 15 are a small
+  pre-registered sensitivity grid; each one counts as a separate trial.
+sources:
+  - citation: "Connors, L., Alvarez, C. (2008). Short Term Trading Strategies That Work (RSI(2) rules as documented by StockCharts ChartSchool)."
+    url: "https://chartschool.stockcharts.com/table-of-contents/trading-strategies-and-models/trading-strategies/rsi-2"
+  - citation: "Baltussen, G., van Bekkum, S., Da, Z. (2019). Indexing and stock market serial dependence around the world. Journal of Financial Economics 132(1)."
+    url: "https://personal.eur.nl/vanbekkum/2018%20JFE%20BaltussenVanBekkumDa.pdf"
+  - citation: "Nagel, S. (2012). Evaporating Liquidity. Review of Financial Studies 25(7), 2005-2039."
+    url: "https://doi.org/10.1093/rfs/hhs066"
+rules: |
+  Indicators: RSI(2) = Wilder RSI with period 2 on daily closes; SMA200 and SMA5 =
+  simple moving averages of the last 200 and 5 daily closes.
+  Entry: close > SMA200 and RSI(2) < 10 at the close -> buy at the next open.
+  Exit (first that applies): close > SMA5 at a close -> sell at the next open; time stop
+  after 10 sessions in the position -> sell at the next open; disaster stop intraday.
+  Universe SPY, QQQ, IWM; primary timeframe 1Day (SIP daily bars, split-adjusted,
+  dividends not credited); holding mode swing.
+  Signals are evaluated on the complete daily bar after the close; every entry and
+  exit is a market order at the next session open.
+  Protection: mandatory bracket with a GTC disaster stop at entry - 3 x ATR(14, daily)
+  and a take profit at 10R (effectively off: exits are rule-based).
+  Sizing: risk 1.0% of equity per trade, at most 0.33 of equity per ETF, at most 3
+  positions, total exposure <= 0.99 (cash account, no leverage). One position per
+  symbol; no new entry while a position in the symbol is open.
+symbols: [SPY, QQQ, IWM]
+costs:
+  base_bps_per_side: 5
+  stress_multipliers: [2, 3]
+config_path: research/configs/mr_b2_rsi2_lt10.yaml
+# Pass rule from the owner acceptance table (DECISIONS.md, 2026-10-02). "dev" is
+# evaluated on the pooled development walk-forward out-of-sample trades
+# (2016-11..2022-12); "lockbox" is the rule for the single lockbox opening
+# (2023-01..2026-06), written before opening. "Nothing passes" is acceptable.
+pass_rule:
+  dev:
+    expectancy_r: {op: ">=", value: 0.10}
+    t_stat: {op: ">=", value: 2.0}
+    bootstrap_expectancy_ci_low: {op: ">", value: 0.0}
+    profit_factor: {op: ">=", value: 1.2}
+    mc_max_drawdown_p95: {op: "<=", value: 0.15}
+    deflated_sharpe_ratio: {op: ">=", value: 0.95}
+    pbo: {op: "<", value: 0.5}
+    random_entry_percentile: {op: ">=", value: 95.0}
+    expectancy_r_at_2x_cost: {op: ">", value: 0.0}
+    vs_buy_and_hold:
+      # Sharpe >= B&H Sharpe, OR (max DD <= 1/2 B&H max DD AND CAGR >= 60% of B&H CAGR)
+      any_of:
+        - sharpe_minus_bh_sharpe: {op: ">=", value: 0.0}
+        - max_drawdown_over_bh_max_drawdown: {op: "<=", value: 0.5}
+          cagr_over_bh_cagr: {op: ">=", value: 0.6}
+  lockbox:
+    expectancy_r: {op: ">", value: 0.0}
+    profit_factor: {op: ">", value: 1.1}
+    expectancy_r_inside_dev_bootstrap_ci: {op: "==", value: true}
+    max_drawdown: {op: "<=", value: 0.15}

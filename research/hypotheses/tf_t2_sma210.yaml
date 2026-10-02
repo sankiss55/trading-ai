@@ -1,0 +1,65 @@
+# Pre-registered hypothesis (research/README.md). Do not edit after the first trial:
+# a changed rule or config is a new trial and counts against the budget.
+id: tf_t2_sma210
+family: "TF (trend baseline)"
+title: "Trend following: hold while close > SMA210 (about 10 months, Faber's horizon)"
+created_at: 2026-10-02
+status: registered
+rationale: |
+  Trend-following baseline and regime reference. Faber (2007) shows that holding an
+  asset only while its price is above its 10-month moving average keeps most of the
+  return with much lower drawdowns; Moskowitz, Ooi & Pedersen (2012) document
+  time-series momentum across asset classes. Here the rule is applied on daily closes
+  (more whipsaw than Faber's month-end rule). It is mainly the benchmark the
+  mean-reversion configurations must beat on a risk-adjusted basis, and a candidate
+  regime filter; it is held to the same pass rule.
+sources:
+  - citation: "Faber, M. (2007). A Quantitative Approach to Tactical Asset Allocation. Journal of Wealth Management (SSRN 962461)."
+    url: "https://mebfaber.com/wp-content/uploads/2016/05/SSRN-id962461.pdf"
+  - citation: "Moskowitz, T., Ooi, Y. H., Pedersen, L. H. (2012). Time series momentum. Journal of Financial Economics 104(2), 228-250."
+    url: "https://doi.org/10.1016/j.jfineco.2011.11.003"
+rules: |
+  Indicator: SMA210 = simple moving average of the last 210 daily closes.
+  Entry: flat and close > SMA210 at the close -> buy at the next open.
+  Exit: close < SMA210 at a close -> sell at the next open; disaster stop intraday.
+  No time stop.
+  Universe SPY, QQQ, IWM; primary timeframe 1Day (SIP daily bars, split-adjusted,
+  dividends not credited); holding mode swing.
+  Signals are evaluated on the complete daily bar after the close; every entry and
+  exit is a market order at the next session open.
+  Protection: mandatory bracket with a GTC disaster stop at entry - 3 x ATR(14, daily)
+  and a take profit at 10R (effectively off: exits are rule-based).
+  Sizing: risk 1.0% of equity per trade, at most 0.33 of equity per ETF, at most 3
+  positions, total exposure <= 0.99 (cash account, no leverage). One position per
+  symbol; no new entry while a position in the symbol is open.
+symbols: [SPY, QQQ, IWM]
+costs:
+  base_bps_per_side: 5
+  stress_multipliers: [2, 3]
+config_path: research/configs/tf_t2_sma210.yaml
+# Pass rule from the owner acceptance table (DECISIONS.md, 2026-10-02). "dev" is
+# evaluated on the pooled development walk-forward out-of-sample trades
+# (2016-11..2022-12); "lockbox" is the rule for the single lockbox opening
+# (2023-01..2026-06), written before opening. "Nothing passes" is acceptable.
+pass_rule:
+  dev:
+    expectancy_r: {op: ">=", value: 0.10}
+    t_stat: {op: ">=", value: 2.0}
+    bootstrap_expectancy_ci_low: {op: ">", value: 0.0}
+    profit_factor: {op: ">=", value: 1.2}
+    mc_max_drawdown_p95: {op: "<=", value: 0.15}
+    deflated_sharpe_ratio: {op: ">=", value: 0.95}
+    pbo: {op: "<", value: 0.5}
+    random_entry_percentile: {op: ">=", value: 95.0}
+    expectancy_r_at_2x_cost: {op: ">", value: 0.0}
+    vs_buy_and_hold:
+      # Sharpe >= B&H Sharpe, OR (max DD <= 1/2 B&H max DD AND CAGR >= 60% of B&H CAGR)
+      any_of:
+        - sharpe_minus_bh_sharpe: {op: ">=", value: 0.0}
+        - max_drawdown_over_bh_max_drawdown: {op: "<=", value: 0.5}
+          cagr_over_bh_cagr: {op: ">=", value: 0.6}
+  lockbox:
+    expectancy_r: {op: ">", value: 0.0}
+    profit_factor: {op: ">", value: 1.1}
+    expectancy_r_inside_dev_bootstrap_ci: {op: "==", value: true}
+    max_drawdown: {op: "<=", value: 0.15}
