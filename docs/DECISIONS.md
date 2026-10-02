@@ -177,6 +177,21 @@ Pre-registered hypotheses (7 configurations + v1.0.0 = 8 of 12):
 
 `config.yaml` stays on strategy v1.0.0 until a v2 finalist passes the lockbox and the owner approves it.
 
+**Development evaluation 2026-10-02 (7 trials recorded in `research/trials.jsonl`; report in
+`research/results/dev_eval_2026-10-02.txt`): all 7 FAIL.** Best: `mr_a1_ibs` (494 gate trades,
+E[R] +0.043, t 2.16, PF 1.29, Sharpe 0.71 vs buy-and-hold 0.57, max DD 7.6% vs 33.5%, CAGR 4.0% vs 10.4%,
+100th percentile vs random entry); it fails expectancy >= 0.10R, bootstrap CI lower bound > 0 (-0.004)
+and DSR >= 0.95 (0.78). The criteria were not changed after seeing the results.
+
+**Owner exception 2026-10-02:** `mr_a1_ibs` is sent to the lockbox as the only finalist although it
+failed 3 development criteria. It is judged once with its pre-written lockbox rule (expectancy > 0,
+PF > 1.1, inside the development CI, max DD <= 15%). If it fails it is discarded permanently.
+
+**Owner decision 2026-10-02: build the paper-trading system (Phases 2-7) after the lockbox, whatever its
+result.** This deviates from sec. 55 (Phase 1 exit criterion not met): the goal of paper trading is
+to validate the system (orders, stops, recovery, reconciliation) with paper money only; any strategy
+run in paper is labelled with its validation status. Live trading stays blocked (sec. 48).
+
 ## Change log (sec. 58.6)
 
 Every change to strategy, risk, prompts, model or universe bumps the matching version
