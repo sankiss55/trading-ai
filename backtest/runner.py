@@ -33,10 +33,16 @@ Slippage sensitivity: the simulation is repeated with the broker slippage
 (``risk.slippage_buffer_bps``) multiplied by 1.5 and 2.0; sizing keeps the configured
 buffer.
 
+Windows: :func:`simulate` takes an optional ``window = (start, end)`` that replaces
+``[start_date, end_date]``; everything else (fresh account, warm-up from the stored
+sessions before ``start``, the loop above) is the same code path. The research mode
+(:mod:`backtest.research`) uses it to simulate each segment as an independent account.
+
 Parallelism: the base run and the sensitivity runs are independent deterministic
-simulations. With ``workers > 1`` they run in separate processes (each loads the
-dataset itself); results are collected in the fixed scenario order, so the report is
-byte-identical to the sequential run (``workers = 1``: one process, one load).
+simulations (:class:`SimulationJob`). With ``workers > 1`` they run in separate
+processes (each loads the dataset itself); results are collected in the fixed job
+order, so the report is byte-identical to the sequential run (``workers = 1``: one
+process, one load).
 
 Refusal: if any OWNER_DECISION the backtest needs is ``null`` the runner raises
 :class:`BacktestRefusedError` listing them; no default is invented. The sec. 45.4
@@ -112,12 +118,14 @@ __all__ = [
     "CLIENT_ORDER_PREFIX",
     "SLIPPAGE_MULTIPLIERS",
     "BacktestRefusedError",
+    "SimulationJob",
     "SimulationResult",
     "add_months",
     "data_fingerprint",
     "default_workers",
     "run_backtest",
     "run_backtest_async",
+    "run_simulations",
     "simulate",
     "walk_forward_windows",
 ]
@@ -211,10 +219,16 @@ class _Simulator:
         starting_cash: Decimal,
         commission_per_fill: Decimal,
         slippage_multiplier: Decimal,
+        window: tuple[date, date] | None = None,
     ) -> None:
         backtest = config.backtest
         if backtest.start_date is None or backtest.end_date is None:  # pragma: no cover
             raise BacktestRefusedError(("backtest.start_date", "backtest.end_date"))
+        start, end = window if window is not None else (backtest.start_date, backtest.end_date)
+        if start > end:
+            raise NonRetryableError(
+                f"invalid simulation window {start} > {end}", code="INVALID_WINDOW"
+            )
         holding = config.strategy.holding_mode
         whitelist = config.universe.whitelist
         feed = config.market_data.feed
@@ -230,13 +244,10 @@ class _Simulator:
         self._holding = holding
         self._symbols = tuple(whitelist)
         self._commission = commission_per_fill
-        self._trading = tuple(
-            s for s in data.sessions if backtest.start_date <= s.session_date <= backtest.end_date
-        )
+        self._trading = tuple(s for s in data.sessions if start <= s.session_date <= end)
         if not self._trading:
             raise NonRetryableError(
-                f"no stored session between {backtest.start_date} and {backtest.end_date}",
-                code="NO_SESSIONS",
+                f"no stored session between {start} and {end}", code="NO_SESSIONS"
             )
         strategy = Strategy(config.strategy, strategy_version=config.strategy_version)
         primary = strategy.params.primary_timeframe
@@ -281,7 +292,7 @@ class _Simulator:
         )
         per_session = _REGULAR_SESSION_MINUTES // primary.minutes
         warmup_count = math.ceil(self._flow.window_size / per_session) + 1
-        earlier = [s for s in data.sessions if s.session_date < backtest.start_date]
+        earlier = [s for s in data.sessions if s.session_date < start]
         self._warmup = tuple(earlier[-warmup_count:])
         self._tif = TimeInForce.DAY if holding is HoldingMode.INTRADAY else TimeInForce.GTC
         self._entry_timeout = timedelta(seconds=config.execution.entry_timeout_seconds)
@@ -692,8 +703,13 @@ async def simulate(
     starting_cash: Decimal,
     commission_per_fill: Decimal = Decimal(0),
     slippage_multiplier: Decimal = Decimal(1),
+    window: tuple[date, date] | None = None,
 ) -> SimulationResult:
     """Run one deterministic simulation over ``[backtest.start_date, backtest.end_date]``.
+
+    ``window = (start, end)`` simulates ``[start, end]`` instead, as a fresh account
+    (starting cash, empty book, fresh risk state) whose indicators are warmed up on the
+    stored sessions before ``start`` only.
 
     Raises:
         BacktestRefusedError: a required OWNER_DECISION is ``null``.
@@ -706,6 +722,7 @@ async def simulate(
         starting_cash=starting_cash,
         commission_per_fill=commission_per_fill,
         slippage_multiplier=slippage_multiplier,
+        window=window,
     )
     return await simulator.run()
 
@@ -733,17 +750,25 @@ def default_workers() -> int:
     return max(1, min(1 + len(SLIPPAGE_MULTIPLIERS), os.cpu_count() or 1))
 
 
+@dataclass(frozen=True, slots=True)
+class SimulationJob:
+    """One independent simulation: slippage multiplier and optional ``(start, end)``."""
+
+    slippage_multiplier: Decimal
+    window: tuple[date, date] | None = None
+
+
 _WORKER_DATA: dict[tuple[Path, DataFeed], BacktestData] = {}
-"""Dataset loaded by a worker process, reused if the pool gives it another scenario."""
+"""Dataset loaded by a worker process, reused if the pool gives it another job."""
 
 
-def _simulate_scenario(
+def _simulate_job(
     config: AppConfig,
     data_dir: Path,
     feed: DataFeed,
     starting_cash: Decimal,
     commission_per_fill: Decimal,
-    slippage_multiplier: Decimal,
+    job: SimulationJob,
 ) -> SimulationResult:
     """Worker-process entry point: load the dataset (once per process) and simulate."""
     key = (data_dir, feed)
@@ -756,22 +781,35 @@ def _simulate_scenario(
             data,
             starting_cash=starting_cash,
             commission_per_fill=commission_per_fill,
-            slippage_multiplier=slippage_multiplier,
+            slippage_multiplier=job.slippage_multiplier,
+            window=job.window,
         )
     )
 
 
-async def _run_scenarios(
+async def run_simulations(
     config: AppConfig,
     data_dir: Path,
     feed: DataFeed,
     *,
     starting_cash: Decimal,
     commission_per_fill: Decimal,
-    multipliers: Sequence[Decimal],
+    jobs: Sequence[SimulationJob],
     workers: int,
+    submit_order: Sequence[int] | None = None,
 ) -> list[SimulationResult]:
-    """One simulation per slippage multiplier, returned in ``multipliers`` order."""
+    """Run ``jobs`` and return their results in ``jobs`` order.
+
+    Args:
+        workers: ``1`` = all in this process (one dataset load); otherwise up to
+            ``workers`` processes, each loading the dataset once.
+        submit_order: Optional permutation of ``range(len(jobs))``: the order in which
+            jobs are handed to the pool (scheduling only; results keep ``jobs`` order,
+            so the output depends neither on it nor on ``workers``).
+    """
+    order = list(range(len(jobs))) if submit_order is None else list(submit_order)
+    if sorted(order) != list(range(len(jobs))):
+        raise ValueError("submit_order must be a permutation of the job indices")
     if workers <= 1:
         data = load_backtest_data(data_dir, feed=feed)
         return [
@@ -780,26 +818,27 @@ async def _run_scenarios(
                 data,
                 starting_cash=starting_cash,
                 commission_per_fill=commission_per_fill,
-                slippage_multiplier=multiplier,
+                slippage_multiplier=job.slippage_multiplier,
+                window=job.window,
             )
-            for multiplier in multipliers
+            for job in jobs
         ]
     loop = asyncio.get_running_loop()
-    with ProcessPoolExecutor(max_workers=min(workers, len(multipliers))) as pool:
-        futures = [
-            loop.run_in_executor(
+    with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+        futures = {
+            index: loop.run_in_executor(
                 pool,
-                _simulate_scenario,
+                _simulate_job,
                 config,
                 data_dir,
                 feed,
                 starting_cash,
                 commission_per_fill,
-                multiplier,
+                jobs[index],
             )
-            for multiplier in multipliers
-        ]
-        return list(await asyncio.gather(*futures))
+            for index in order
+        }
+        return list(await asyncio.gather(*(futures[index] for index in range(len(jobs)))))
 
 
 async def run_backtest_async(
@@ -844,13 +883,13 @@ async def run_backtest_async(
         or primary is None
     ):  # pragma: no cover - guarded by _require_runnable
         raise BacktestRefusedError(pending_backtest_decisions(config))
-    base, *runs = await _run_scenarios(
+    base, *runs = await run_simulations(
         config,
         data_dir,
         DataFeed(feed),
         starting_cash=starting_cash,
         commission_per_fill=commission_per_fill,
-        multipliers=(Decimal(1), *SLIPPAGE_MULTIPLIERS),
+        jobs=[SimulationJob(multiplier) for multiplier in (Decimal(1), *SLIPPAGE_MULTIPLIERS)],
         workers=workers,
     )
     scenarios = []

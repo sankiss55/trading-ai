@@ -50,6 +50,8 @@ __all__ = [
     "WalkForwardWindow",
     "compute_metrics",
     "continuation_check",
+    "format_value",
+    "period_lines",
     "render_text",
 ]
 
@@ -373,7 +375,8 @@ def continuation_check(thresholds: BacktestSection, oos: PeriodMetrics) -> Conti
 # --------------------------------------------------------------------------- text
 
 
-def _fmt(value: Decimal | int | None, *, pct: bool = False) -> str:
+def format_value(value: Decimal | int | None, *, pct: bool = False) -> str:
+    """``n/a`` for ``None``; ``pct`` renders a fraction as a percentage (2 decimals)."""
     if value is None:
         return "n/a"
     if pct:
@@ -383,7 +386,11 @@ def _fmt(value: Decimal | int | None, *, pct: bool = False) -> str:
     return f"{value:.4f}"
 
 
-def _period_lines(metrics: PeriodMetrics) -> list[str]:
+_fmt = format_value
+
+
+def period_lines(metrics: PeriodMetrics) -> list[str]:
+    """The text block of one period (shared by the official and research reports)."""
     return [
         f"[{metrics.label}] {metrics.start_date} .. {metrics.end_date} "
         f"({metrics.sessions} sessions)",
@@ -413,9 +420,9 @@ def render_text(report: BacktestReport) -> str:
         f"cash {report.starting_cash}  slippage {report.slippage_bps} bps  "
         f"commission/fill {report.commission_per_fill}",
         "",
-        *_period_lines(report.full),
-        *_period_lines(report.in_sample),
-        *_period_lines(report.out_of_sample),
+        *period_lines(report.full),
+        *period_lines(report.in_sample),
+        *period_lines(report.out_of_sample),
         "",
         "Walk-forward (sequential test windows; no parameters are optimised):",
     ]

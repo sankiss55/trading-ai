@@ -3,7 +3,13 @@
 Prints the text summary; ``--out`` also writes the full JSON report. ``--workers N``
 runs the base and slippage-sensitivity simulations in up to N processes (default: one
 per scenario, at most the CPU count; ``1`` = sequential); the report is identical for
-any N. Exit codes:
+any N.
+
+``--mode official`` (default) is the sec. 45.4 run: one continuous account over the
+whole period. ``--mode segmented`` is the RESEARCH mode (:mod:`backtest.research`):
+every segment (walk-forward test windows, in/out-of-sample, calendar years) is an
+independent fresh account, so halts reset per segment; it is NOT the official run.
+Exit codes:
 ``0`` report produced, ``2`` refused (pending OWNER_DECISIONs) or invalid input.
 The starting capital is not part of config.yaml (sec. 7.3), so it must be passed
 explicitly; there is no default.
@@ -12,6 +18,7 @@ explicitly; there is no default.
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from collections.abc import Sequence
 from decimal import Decimal, InvalidOperation
@@ -19,6 +26,7 @@ from pathlib import Path
 
 from app.config import ConfigError, load_config
 from backtest.report import render_text
+from backtest.research import render_research_text, run_research
 from backtest.runner import BacktestRefusedError, default_workers, run_backtest
 from domain.errors import NonRetryableError
 
@@ -65,29 +73,49 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--workers",
         type=_workers,
         default=default_workers(),
-        help="processes for the base and sensitivity simulations "
-        "(default: %(default)s; 1 = sequential; the report does not depend on it)",
+        help="processes for the simulations (default: %(default)s; 1 = sequential; "
+        "the report does not depend on it)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("official", "segmented"),
+        default="official",
+        help="official: the sec. 45.4 continuous run (default); segmented: RESEARCH mode, "
+        "a fresh account per segment (halts reset per segment), NOT the official run",
     )
     args = parser.parse_args(argv)
     try:
         loaded = load_config(args.config)
-        report = run_backtest(
-            loaded,
-            args.data,
-            starting_cash=args.starting_cash,
-            commission_per_fill=args.commission_per_fill,
-            workers=args.workers,
-        )
+        if args.mode == "segmented":
+            research = run_research(
+                loaded,
+                args.data,
+                starting_cash=args.starting_cash,
+                commission_per_fill=args.commission_per_fill,
+                workers=args.workers,
+            )
+            text, payload = render_research_text(research), research.model_dump_json(indent=2)
+        else:
+            report = run_backtest(
+                loaded,
+                args.data,
+                starting_cash=args.starting_cash,
+                commission_per_fill=args.commission_per_fill,
+                workers=args.workers,
+            )
+            text, payload = render_text(report), report.model_dump_json(indent=2)
     except BacktestRefusedError as exc:
         print(str(exc), file=sys.stderr)
         return 2
     except (ConfigError, NonRetryableError) as exc:
         print(f"backtest failed: {exc}", file=sys.stderr)
         return 2
-    print(render_text(report))
+    if args.mode == "segmented" and isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(errors="replace")  # the research banner is not ASCII
+    print(text)
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+        args.out.write_text(payload, encoding="utf-8")
         print(f"\nJSON report written to {args.out}")
     return 0
 

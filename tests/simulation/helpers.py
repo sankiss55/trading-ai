@@ -24,13 +24,13 @@ SEED = 42
 DRIFT_BPS = 0.2
 
 
-def make_dataset(directory: Path, *, end: date, seed: int = SEED) -> Path:
+def make_dataset(directory: Path, *, end: date, seed: int = SEED, start: date = DATA_START) -> Path:
     """Write the standard synthetic dataset into ``directory`` and return it."""
     generate_synthetic_data(
         directory,
         SyntheticSpec(
             symbols=("SYNTH",),
-            start=DATA_START,
+            start=start,
             end=end,
             seed=seed,
             drift_bps_per_minute=DRIFT_BPS,
@@ -44,6 +44,7 @@ def fixture_loaded(
     backtest: dict[str, Any] | None = None,
     strategy: dict[str, Any] | None = None,
     exit_: dict[str, Any] | None = None,
+    risk: dict[str, Any] | None = None,
 ) -> LoadedConfig:
     """The fixture config with optional section overrides (values must stay valid)."""
     loaded = load_config(FIXTURE_CONFIG)
@@ -59,6 +60,7 @@ def fixture_loaded(
         update={
             "strategy": strategy_section,
             "backtest": config.backtest.model_copy(update=backtest or {}),
+            "risk": config.risk.model_copy(update=risk or {}),
         }
     )
     return LoadedConfig(config=config, config_hash=loaded.config_hash, path=loaded.path)
