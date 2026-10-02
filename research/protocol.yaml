@@ -1,0 +1,49 @@
+# Research protocol of strategy family v2 (owner decision 2026-10-02, docs/DECISIONS.md
+# "Strategy v1.0.0 result and family v2"; research/README.md). Loaded and validated by
+# backtest.research_cli.ResearchProtocol. Dates are inclusive. Changing a value changes
+# how every later trial is evaluated: record the change in docs/DECISIONS.md first.
+protocol_version: "1.0.0"
+
+# Development window: walk-forward evaluation and every statistic (any number of looks).
+# 2016-01-04..2016-10-31 (210 SIP sessions) is indicator warm-up only.
+dev_window: {start: 2016-11-01, end: 2022-12-31}
+# Lockbox: opened ONCE per finalist (clean tree, recorded commit, pass rule written before).
+lockbox_window: {start: 2023-01-01, end: 2026-06-30}
+# Embargo: forward paper trading only, never backtested.
+embargo_start: 2026-07-01
+
+# Registered configurations in total, strategy v1.0.0 included (it counts as 1 and is not
+# a record of research/trials.jsonl). Must match backtest.registry.TRIAL_BUDGET / V1_TRIAL_COUNT.
+trial_budget: 12
+v1_trials: 1
+
+costs:
+  base_bps_per_side: 5          # = risk.slippage_buffer_bps of every research config
+  stress_multipliers: [2, 3]    # simulated by scaling the broker slippage (sizing unchanged)
+
+walk_forward: {train_months: 12, test_months: 3}
+# Sample of the per-trade dev criteria (expectancy, t, bootstrap CI, PF, Holm/BHY):
+#   walk_forward_fresh_accounts   = pooled walk-forward test windows, each a fresh account
+#                                   (as approved). A trade still open at a window end is
+#                                   never closed and NOT counted: long holds (trend) are cut.
+#   continuous_walk_forward_span  = trades of the continuous dev run entered inside the
+#                                   walk-forward test span (no parameter is fitted, so the
+#                                   decisions are the same; nothing is cut at window ends).
+# Both are always reported. Decided 2026-10-02 before the first dev trial (owner delegated the
+# choice to the coding agent): continuous span, because fresh-account windows drop every trade
+# still open at a window end, which biases long holds (trend) by construction.
+gate_sample: continuous_walk_forward_span
+
+bootstrap:                      # ISO-week block bootstrap of the pooled walk-forward trades
+  resamples: 10000
+  confidence: 0.95
+  seed: 20261002
+monte_carlo:                    # stationary bootstrap of the continuous run's daily returns
+  sims: 10000
+  mean_block_length: 10         # sessions (technical choice, ~2 weeks of autocorrelation)
+  seed: 20261003
+random_entry:
+  sims: 1000
+  seed: 20261004
+pbo:
+  blocks: 16                    # CSCV blocks (even)

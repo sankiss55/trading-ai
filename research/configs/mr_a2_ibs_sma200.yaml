@@ -1,0 +1,155 @@
+# Research configuration of the pre-registered hypothesis `mr_a2_ibs_sma200` (strategy family v2,
+# research/hypotheses/mr_a2_ibs_sma200.yaml). NOT the live config: config.yaml stays on strategy
+# v1.0.0 until a v2 finalist passes the lockbox and the owner approves it (DECISIONS.md
+# "Strategy v1.0.0 result and family v2"). Do not edit after the first trial: a changed
+# file has a new config_hash and is a new trial (research/README.md).
+# Values: family v2 owner decisions 2026-10-02 (universe, swing, 1Day SIP, next-open market
+# orders, ATR(14) x 3 disaster stop, 10R take profit, sizing, 5 bps costs) and the owner
+# values of config.yaml for everything family v2 does not change (loss limits, thresholds,
+# AI, retention...). Numbers are unquoted on purpose: the loader parses YAML floats as Decimal.
+
+config_version: "2.3.0"            # same schema as config.yaml 2.3.0
+strategy_version: "2.0.0-mr_a2_ibs_sma200"
+risk_version: "2.0.0"              # family v2 sizing (1% risk, 0.33/ETF, 0.99 total, 3% open risk)
+prompt_version: "1"
+
+system:
+  timezone_internal: "UTC"
+  timezone_market: "America/New_York"
+  db_path: "data/research/trading.db"
+  log_dir: "logs/research"
+  control_stop_file: "control/STOP"
+  control_poll_seconds: 5
+  max_clock_skew_seconds: 2
+  queue_max_size: 100
+
+universe:
+  whitelist: ["SPY", "QQQ", "IWM"]   # family v2 (owner decision 2026-10-02)
+  blacklist: []
+  min_price: 10                      # owner value (config.yaml)
+  max_price: 2000                    # owner value (config.yaml)
+  min_avg_daily_volume: 5000000      # owner value (config.yaml)
+  liquidity_feed: "sip"
+  avg_volume_lookback_days: 20
+  max_spread_bps: 20                 # owner value (config.yaml)
+
+market_data:
+  feed: "sip"                        # family v2: SIP daily strategy bars, same feed live and in backtest
+  adjustment: "split"                # dividends not credited (small conservative bias)
+  max_bar_age_seconds: 90
+  bar_close_grace_seconds: 10
+  history_warmup_bars: 250           # >= the 210 bars of the longest indicator in the family (SMA210) + margin
+
+session:
+  allow_premarket: false
+  allow_after_hours: false
+  no_entry_first_minutes: 15         # owner value; no effect on a 1Day strategy (required key)
+  no_entry_last_minutes: 30          # owner value; no effect on a 1Day strategy (required key)
+
+strategy:
+  holding_mode: "swing"              # family v2: positions held overnight, GTC disaster stop
+  flatten_minutes_before_close: null
+  primary_timeframe: "1Day"
+  confirmation_timeframe: null
+  signal_ttl_seconds: 120            # 1Day: the signal expires at the next open + 120 s
+  cooldown_bars: 0                   # no cooldown in the pre-registered rules (an exit fills at an open, so the earliest new decision is that session's close, one bar later)
+  min_minutes_per_bar: 3             # owner value; no effect on COMPLETE daily bars
+  indicators:
+    ema_fast: null
+    ema_slow: null
+    rsi_period: null
+    atr_period: 14                   # disaster stop ATR(14, daily)
+    volume_avg_period: null
+    sma_short_period: null
+    sma_long_period: 200
+  entry_rules:
+    - {rule_id: ENTRY_IBS_01, timeframe: primary, left: {series: ibs}, op: "<", right: {const: 0.2}}
+    - {rule_id: ENTRY_TREND_01, timeframe: primary, left: {series: close}, op: ">", right: {series: sma_long}}
+  no_trade_rules: []
+  exit_rules:
+    - {rule_id: EXIT_IBS_01, timeframe: primary, left: {series: ibs}, op: ">", right: {const: 0.8}}
+  no_trade_thresholds: {}
+  exit:
+    stop_method: "atr"
+    stop_atr_multiplier: 3           # disaster stop entry - 3 x ATR(14)
+    take_profit_r_multiple: 10       # effectively off: exits are rule-based
+    time_stop_bars: 5
+    exit_on_signal_reversal: true
+    min_tp_distance_ticks: 2
+
+risk:
+  risk_per_trade_pct: 0.01           # family v2
+  max_daily_loss_pct: 0.02           # owner value (config.yaml)
+  max_weekly_loss_pct: 0.04          # owner value (config.yaml)
+  max_drawdown_pct: 0.10             # owner value (config.yaml)
+  max_positions: 3                   # family v2
+  max_total_exposure_pct: 0.99       # family v2 (cash only)
+  max_symbol_exposure_pct: 0.33      # family v2
+  max_aggregate_open_risk_pct: 0.03  # family v2: 3 positions x 1% risk
+  slippage_buffer_bps: 5             # family v2 base cost per side
+  min_qty: 1
+
+execution:
+  entry_order_type: "market"         # market order at the next session open
+  limit_entry_offset_bps: null
+  entry_timeout_seconds: 30
+  max_order_rejections_per_day: 3
+  flatten_retry_seconds: 60
+  reconcile_interval_seconds: 60
+
+ai:                                  # owner values (config.yaml); the backtest does not use the AI filter
+  provider: "claude_cli"
+  cli_command: "claude"
+  cli_max_concurrency: 1
+  model_id: "claude-sonnet-5-5"
+  effort: null
+  max_output_tokens: 1024
+  request_timeout_seconds: 30
+  max_retries: 2
+  on_unavailable: "block"
+  snapshot_bars_primary: 30
+  snapshot_bars_confirmation: 0
+  recent_outcomes_limit: 5
+  max_rationale_chars: 500
+  benchmark_symbol: "SPY"
+  include_news: false
+  max_headlines: 5
+  max_calls_per_day: 50
+  max_cost_usd_per_day: 5
+  max_cost_usd_per_month: 100
+  pricing:
+    input_per_mtok_usd: 2.00
+    output_per_mtok_usd: 10.00
+    cache_write_per_mtok_usd: null
+    cache_read_per_mtok_usd: null
+
+notifications:
+  policy: "critical_plus_daily"
+  daily_summary_time_et: "16:30"
+  error_digest_minutes: 30
+
+retention:
+  market_bars_days: 365
+  ai_snapshots_days: 365
+  logs_days: 90
+
+backtest:                            # development window only (research/protocol.yaml)
+  start_date: 2016-11-01
+  end_date: 2022-12-31
+  out_of_sample_start: 2017-11-01    # first walk-forward test window (start + 12 months)
+  walk_forward_train_months: 12
+  walk_forward_test_months: 3
+  min_expectancy_r: 0.10             # owner value (sec. 45.4)
+  min_profit_factor: 1.2             # owner value
+  max_drawdown_pct: 0.15             # owner value
+  min_trades_out_of_sample: 100      # owner value
+
+paper:
+  min_paper_trading_days: 30
+  min_shadow_signals: 100
+  min_expectancy_improvement_r: 0.05
+  min_valid_ai_response_rate: 0.95
+
+backups:
+  frequency: "daily_after_close"
+  retention_days: 30

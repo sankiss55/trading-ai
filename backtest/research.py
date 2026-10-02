@@ -22,6 +22,10 @@ are empty. The research mode measures the strategy in every market regime instea
 
 All segment simulations are independent and may run in parallel (``workers``); results
 are merged in the fixed segment order, so the report does not depend on ``workers``.
+
+:func:`run_config_jobs` runs simulations of SEVERAL configurations in one process pool
+(the research CLI of family v2, :mod:`backtest.research_cli`); like
+:func:`backtest.runner.run_simulations` it returns the results in job order.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -37,8 +42,8 @@ from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from app.config import LoadedConfig, pending_backtest_decisions, risk_params
-from backtest.data import CALENDAR_FILE, load_calendar
+from app.config import AppConfig, LoadedConfig, pending_backtest_decisions, risk_params
+from backtest.data import CALENDAR_FILE, BacktestData, load_backtest_data, load_calendar
 from backtest.report import (
     DISCLAIMER,
     ContinuationCheck,
@@ -58,6 +63,7 @@ from backtest.runner import (
     SimulationResult,
     data_fingerprint,
     run_simulations,
+    simulate,
     walk_forward_windows,
 )
 from domain.errors import NonRetryableError
@@ -68,6 +74,7 @@ __all__ = [
     "CONTINUATION_LABEL",
     "HALT_CODES",
     "RESEARCH_BANNER",
+    "ConfigJob",
     "ResearchReport",
     "Segment",
     "SegmentAggregate",
@@ -75,6 +82,7 @@ __all__ = [
     "SegmentReport",
     "render_research_text",
     "research_segments",
+    "run_config_jobs",
     "run_research",
     "run_research_async",
 ]
@@ -607,3 +615,93 @@ def render_research_text(report: ResearchReport) -> str:
         lines.append(f"  pending OWNER_DECISIONs: {', '.join(check.pending)}")
     lines += ["", *report.notes, report.disclaimer, "", report.banner]
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- multi-config jobs
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigJob:
+    """One independent simulation of ``config`` (research CLI: several configs per pool)."""
+
+    config: AppConfig
+    job: SimulationJob
+
+
+_WORKER_DATA: dict[tuple[Path, DataFeed], BacktestData] = {}
+"""Dataset loaded by a worker process, reused for every job the pool gives it."""
+
+
+def _simulate_config_job(
+    data_dir: Path,
+    feed: DataFeed,
+    starting_cash: Decimal,
+    commission_per_fill: Decimal,
+    job: ConfigJob,
+) -> SimulationResult:
+    """Worker-process entry point: load the dataset (once per process) and simulate."""
+    key = (data_dir, feed)
+    data = _WORKER_DATA.get(key)
+    if data is None:
+        data = _WORKER_DATA[key] = load_backtest_data(data_dir, feed=feed)
+    return asyncio.run(
+        simulate(
+            job.config,
+            data,
+            starting_cash=starting_cash,
+            commission_per_fill=commission_per_fill,
+            slippage_multiplier=job.job.slippage_multiplier,
+            window=job.job.window,
+        )
+    )
+
+
+async def run_config_jobs(
+    jobs: Sequence[ConfigJob],
+    data: BacktestData,
+    feed: DataFeed,
+    *,
+    starting_cash: Decimal,
+    commission_per_fill: Decimal = Decimal(0),
+    workers: int = 1,
+    submit_order: Sequence[int] | None = None,
+) -> list[SimulationResult]:
+    """Run ``jobs`` (each with its own configuration) and return results in job order.
+
+    Args:
+        data: Dataset already loaded by the caller; ``workers <= 1`` simulates on it in
+            this process, otherwise every worker process loads ``data.directory`` once.
+        submit_order: Optional permutation of ``range(len(jobs))`` handed to the pool
+            first-to-last (scheduling only: results keep ``jobs`` order, so they depend
+            neither on it nor on ``workers``).
+    """
+    order = list(range(len(jobs))) if submit_order is None else list(submit_order)
+    if sorted(order) != list(range(len(jobs))):
+        raise ValueError("submit_order must be a permutation of the job indices")
+    if workers <= 1 or len(jobs) <= 1:
+        return [
+            await simulate(
+                job.config,
+                data,
+                starting_cash=starting_cash,
+                commission_per_fill=commission_per_fill,
+                slippage_multiplier=job.job.slippage_multiplier,
+                window=job.job.window,
+            )
+            for job in jobs
+        ]
+    loop = asyncio.get_running_loop()
+    with ProcessPoolExecutor(max_workers=min(workers, len(jobs))) as pool:
+        futures = {
+            index: loop.run_in_executor(
+                pool,
+                _simulate_config_job,
+                data.directory,
+                feed,
+                starting_cash,
+                commission_per_fill,
+                jobs[index],
+            )
+            for index in order
+        }
+        return list(await asyncio.gather(*(futures[index] for index in range(len(jobs)))))
