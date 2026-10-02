@@ -81,7 +81,7 @@ def test_protocol_has_the_owner_windows_budget_and_costs() -> None:
     assert protocol.monte_carlo.sims == 10_000
     assert protocol.random_entry.sims == 1_000
     assert protocol.pbo.blocks == 16
-    assert protocol.gate_sample == "walk_forward_fresh_accounts"
+    assert protocol.gate_sample == "continuous_walk_forward_span"
     seeds = {protocol.bootstrap.seed, protocol.monte_carlo.seed, protocol.random_entry.seed}
     assert len(seeds) == 3
 
@@ -96,8 +96,8 @@ def test_protocol_has_the_owner_windows_budget_and_costs() -> None:
         ("v1_trials: 1", "v1_trials: 0"),
         ("stress_multipliers: [2, 3]", "stress_multipliers: [3, 2]"),
         ("protocol_version", "unknown_key: 1\nprotocol_version"),
-        ("gate_sample: walk_forward_fresh_accounts", "gate_sample: everything"),
-        ("gate_sample: walk_forward_fresh_accounts", "# no gate sample"),
+        ("gate_sample: continuous_walk_forward_span", "gate_sample: everything"),
+        ("gate_sample: continuous_walk_forward_span", "# no gate sample"),
     ],
 )
 def test_invalid_protocols_are_refused(tmp_path: Path, old: str, new: str) -> None:

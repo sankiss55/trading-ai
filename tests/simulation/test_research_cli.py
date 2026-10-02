@@ -273,11 +273,11 @@ def test_dev_report_has_every_section(dev_run: DevRun) -> None:
         assert regimes["by_symbol"]
         assert {r["key"] for r in regimes["by_spy_sma200"]} <= {"above", "below", "unknown"}
         assert result["gate"]["stage"] == "dev"
-        assert result["gate_sample"] == "walk_forward_fresh_accounts"
+        assert result["gate_sample"] == "continuous_walk_forward_span"
         metrics = result["metrics"]
-        assert metrics["gate_sample"] == "walk_forward_fresh_accounts"
-        assert metrics["expectancy_r"] == metrics["wf_expectancy_r"]
-        assert metrics["gate_trades"] == metrics["wf_trades"]
+        assert metrics["gate_sample"] == "continuous_walk_forward_span"
+        assert metrics["expectancy_r"] == metrics["span_expectancy_r"]
+        assert metrics["gate_trades"] == metrics["span_trades"]
         span = result["continuous_in_walk_forward_span"]
         assert metrics["span_trades"] == span["trades"]
         assert result["continuous_in_walk_forward_span_bootstrap"]["n_trades"] == span["trades"]
@@ -324,12 +324,12 @@ def test_dev_is_identical_for_one_and_three_workers(
     assert registry.read_bytes() == dev_run.registry.read_bytes()
 
 
-def test_gate_sample_switch_uses_the_continuous_span_trades(
+def test_gate_sample_switch_uses_the_fresh_window_trades(
     tree: Tree, dev_run: DevRun, tmp_path: Path
 ) -> None:
     protocol = (tree.root / "protocol.yaml").read_text(encoding="utf-8")
     switched = protocol.replace(
-        "gate_sample: walk_forward_fresh_accounts", "gate_sample: continuous_walk_forward_span"
+        "gate_sample: continuous_walk_forward_span", "gate_sample: walk_forward_fresh_accounts"
     )
     assert switched != protocol
     (tree.root / "protocol_span.yaml").write_text(switched, encoding="utf-8")
@@ -339,17 +339,17 @@ def test_gate_sample_switch_uses_the_continuous_span_trades(
     default = {r["hypothesis_id"]: r for r in dev_run.report()["hypotheses"]}
     for result in report["hypotheses"]:
         metrics = result["metrics"]
-        assert metrics["gate_sample"] == "continuous_walk_forward_span"
-        assert metrics["expectancy_r"] == metrics["span_expectancy_r"]
-        assert metrics["gate_trades"] == metrics["span_trades"]
-        boot = result["continuous_in_walk_forward_span_bootstrap"]
+        assert metrics["gate_sample"] == "walk_forward_fresh_accounts"
+        assert metrics["expectancy_r"] == metrics["wf_expectancy_r"]
+        assert metrics["gate_trades"] == metrics["wf_trades"]
+        boot = result["walk_forward"]["bootstrap"]
         assert metrics["bootstrap_expectancy_ci_low"] == boot["expectancy_ci_low"]
         # The simulations are the same: only the gate sample changed.
         same = default[result["hypothesis_id"]]
         assert result["continuous"] == same["continuous"]
         assert result["walk_forward"] == same["walk_forward"]
     text = (out / "dev_report.txt").read_text(encoding="utf-8")
-    assert "per-trade gate sample: continuous_walk_forward_span" in text
+    assert "per-trade gate sample: walk_forward_fresh_accounts" in text
 
 
 def _fake_record(index: int) -> TrialRecord:
