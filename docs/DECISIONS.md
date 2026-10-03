@@ -267,6 +267,8 @@ process: `subprocess`, `asyncio.subprocess`, `os.system` and similar are forbidd
 
 | Date | Phase | Approver | Notes |
 | --- | --- | --- | --- |
+| 2026-10-03 | 3. Market data en vivo | Owner | Daily-only scope. Exit evidence: `python -m backtest.parity --live` PASS on real Alpaca SIP data (60 decisions identical between backtest and live paths, 271 calendar sessions identical) |
+| 2026-10-03 | 4. Riesgo y seguridad | Owner | Shared check library (sec. 19), circuit breaker (sec. 30); AC-05 and AC-15 (logic) covered by simulation tests; full suite 1851 passed; parity PASS. Owner also approved that Phase 5 submits TEST orders to the Alpaca PAPER account (paper money only) to verify execution |
 | 2026-10-03 | 2. Infraestructura base | Owner | Exit evidence: `python -m app.main --once` on Alpaca paper reached READY with trading disabled (account ACTIVE, 0 positions, 0 orders, reconciliation OK, health OK) = AC-01; AC-20 covered by tests; full suite 1606 passed. Phase 1 exit criterion was NOT met (no validated strategy); owner decided 2026-10-02 to build the paper system anyway |
 
 ## Technical decisions pending owner confirmation
