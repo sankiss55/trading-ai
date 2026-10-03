@@ -1,8 +1,7 @@
-"""``IMarketCalendar`` sessions from the Alpaca trading calendar (sec. 11).
+"""``IMarketCalendar`` over the Alpaca trading calendar and market clock (sec. 11).
 
-Scope (declared early pull-forward of part of Phase 2): trading days and early closes
-only, used to store the historical calendar of the backtest dataset. The live market
-clock is Phase 2 (``get_clock`` raises ``NotImplementedError``).
+Sessions (trading days and early closes) were pulled forward for the backtest dataset;
+the live market clock (``get_clock``) completes the port in Phase 2.
 
 SDK facts (verified against alpaca-py 0.44.0 source):
 
@@ -13,6 +12,11 @@ SDK facts (verified against alpaca-py 0.44.0 source):
   ``date`` + ``"HH:MM"`` strings, in America/New_York wall time. They are localized with
   ``zoneinfo`` (DST-aware) and converted to UTC here.
 * A session is an early close when its local close is before 16:00.
+* ``TradingClient.get_clock()`` (``GET /v2/clock``) returns ``alpaca.trading.models.Clock``
+  with ``timestamp``, ``is_open``, ``next_open`` and ``next_close``; the API sends them
+  as RFC 3339 strings with the New York offset (e.g. ``-04:00``), so the SDK yields
+  **aware** datetimes. They are converted to UTC; a naive value is rejected
+  (``INVALID_CLOCK``) instead of being guessed.
 
 The trading client is always built with ``paper=True`` (sec. 7.2); ``APP_ENV=live`` is
 refused by the composition root before any adapter is built.
@@ -28,7 +32,7 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.models import Calendar
+from alpaca.trading.models import Calendar, Clock
 from alpaca.trading.requests import GetCalendarRequest
 from pydantic import ValidationError
 
@@ -43,6 +47,7 @@ __all__ = [
     "AlpacaCalendar",
     "CalendarClient",
     "convert_calendar_day",
+    "convert_clock",
 ]
 
 MARKET_TIMEZONE = ZoneInfo("America/New_York")
@@ -57,6 +62,10 @@ class CalendarClient(Protocol):
         self, filters: GetCalendarRequest | None = None
     ) -> list[Calendar] | dict[str, Any]:
         """Market days in the filter range."""
+        ...
+
+    def get_clock(self) -> Clock | dict[str, Any]:
+        """Current market clock."""
         ...
 
 
@@ -92,8 +101,31 @@ def convert_calendar_day(day: Calendar) -> SessionDay:
         raise NonRetryableError(f"calendar day {day.date}: {exc}", code="INVALID_CALENDAR") from exc
 
 
+def _aware_to_utc(name: str, moment: datetime) -> datetime:
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(f"{name} is not timezone-aware")
+    return moment.astimezone(UTC)
+
+
+def convert_clock(clock: Clock) -> MarketClock:
+    """Convert the SDK market clock into a UTC ``MarketClock``.
+
+    Raises:
+        NonRetryableError: code ``INVALID_CLOCK`` (naive or inconsistent timestamps).
+    """
+    try:
+        return MarketClock(
+            is_open=clock.is_open,
+            now_utc=_aware_to_utc("timestamp", clock.timestamp),
+            next_open_utc=_aware_to_utc("next_open", clock.next_open),
+            next_close_utc=_aware_to_utc("next_close", clock.next_close),
+        )
+    except ValueError as exc:  # pydantic ValidationError is a ValueError
+        raise NonRetryableError(f"market clock: {exc}", code="INVALID_CLOCK") from exc
+
+
 class AlpacaCalendar:
-    """Trading sessions from the Alpaca calendar, cached in memory (sec. 11.3).
+    """Trading sessions (cached in memory, sec. 11.3) and the live market clock.
 
     Args:
         client: alpaca-py ``TradingClient`` (paper) or a test double.
@@ -190,9 +222,24 @@ class AlpacaCalendar:
         return self._cache.get(day)
 
     async def get_clock(self) -> MarketClock:
-        """The live market clock (``TradingClient.get_clock``) is Phase 2.
+        """Current market state according to the broker (never cached).
 
         Raises:
-            NotImplementedError: always.
+            RetryableError: retries exhausted (rate limit, 5xx, network).
+            NonRetryableError: auth, rejected request, invalid clock data.
         """
-        raise NotImplementedError("Phase 2")
+        operation = "get_clock"
+        result = await call_with_retry(
+            self._client.get_clock,
+            operation=operation,
+            policy=self._policy,
+            sleep=self._sleep,
+            pacer=self._pacer,
+            unit_random=self._unit_random,
+        )
+        if not isinstance(result, Clock):
+            raise NonRetryableError(
+                f"{operation}: expected a Clock, got {type(result).__name__}",
+                code="INVALID_SCHEMA",
+            )
+        return convert_clock(result)

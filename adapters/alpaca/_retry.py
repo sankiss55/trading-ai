@@ -17,17 +17,26 @@ import random
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Protocol, TypeVar
 
 from adapters.alpaca._errors import SDK_ERRORS, translate_error
-from domain.errors import NonRetryableError, RetryableError
+from domain.errors import DomainError, RetryableError
 
-__all__ = ["RequestPacer", "RetryPolicy", "Sleep", "call_with_retry"]
+__all__ = ["ErrorTranslator", "RequestPacer", "RetryPolicy", "Sleep", "call_with_retry"]
 
 T = TypeVar("T")
 
 Sleep = Callable[[float], Awaitable[None]]
 """Async sleep function (``asyncio.sleep`` in production, a recorder in tests)."""
+
+
+class ErrorTranslator(Protocol):
+    """Maps an SDK/network exception to a domain error (``translate_error`` and the
+    order-endpoint variants in ``adapters.alpaca._errors``)."""
+
+    def __call__(self, exc: Exception, *, operation: str) -> DomainError:
+        """Domain error for ``exc`` raised by ``operation``."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +110,7 @@ async def call_with_retry(
     sleep: Sleep,
     pacer: RequestPacer | None = None,
     unit_random: Callable[[], float] = random.random,
+    translate: ErrorTranslator = translate_error,
 ) -> T:
     """Run the synchronous SDK ``call`` in a thread with bounded retries.
 
@@ -111,6 +121,7 @@ async def call_with_retry(
         sleep: Async sleep used between attempts.
         pacer: Optional request pacer awaited before every attempt.
         unit_random: Source of ``U[0, 1)`` for the jitter.
+        translate: Exception classifier (only its ``RetryableError`` results are retried).
 
     Raises:
         NonRetryableError: On the first non-retryable failure (never retried).
@@ -122,8 +133,8 @@ async def call_with_retry(
         try:
             return await asyncio.to_thread(call)
         except SDK_ERRORS as exc:
-            error = translate_error(exc, operation=operation)
-            if isinstance(error, NonRetryableError):
+            error = translate(exc, operation=operation)
+            if not isinstance(error, RetryableError):
                 raise error from exc
             if attempt == policy.max_attempts:
                 raise RetryableError(

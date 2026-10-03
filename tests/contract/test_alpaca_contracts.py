@@ -27,6 +27,7 @@ from tests.unit.alpaca.fakes import (
     SleepRecorder,
     bar_payload,
     calendar_payload,
+    clock_payload,
     minute_payloads,
 )
 
@@ -56,19 +57,24 @@ class TestAlpacaMarketDataContract(MarketDataContract):
         )
 
 
+MARKET_OPEN_CLOCK = clock_payload(
+    "2026-10-02T10:00:00-04:00",
+    is_open=True,
+    next_open="2026-10-05T09:30:00-04:00",
+    next_close="2026-10-02T16:00:00-04:00",
+)
+MARKET_CLOSED_CLOCK = clock_payload()  # Saturday 2026-10-03
+
+
 class TestAlpacaCalendarContract(CalendarContract):
-    @pytest.fixture
-    def calendar_harness(self) -> CalendarHarness:
+    @pytest.fixture(params=[MARKET_OPEN_CLOCK, MARKET_CLOSED_CLOCK], ids=["open", "closed"])
+    def calendar_harness(self, request: pytest.FixtureRequest) -> CalendarHarness:
         days = [calendar_payload(date(2026, 10, d)) for d in (1, 2, 5)]
-        calendar: IMarketCalendar = AlpacaCalendar(FakeCalendarClient(days), sleep=SleepRecorder())
+        client = FakeCalendarClient(days, clock=request.param)
+        calendar: IMarketCalendar = AlpacaCalendar(client, sleep=SleepRecorder())
         return CalendarHarness(
             calendar=calendar, trading_day=date(2026, 10, 2), non_trading_day=date(2026, 10, 3)
         )
-
-    async def test_clock_is_internally_consistent(self, calendar_harness: CalendarHarness) -> None:
-        # The live clock (TradingClient.get_clock) is Phase 2; the contract applies then.
-        with pytest.raises(NotImplementedError, match="Phase 2"):
-            await calendar_harness.calendar.get_clock()
 
 
 class _PagedDataClient(StockHistoricalDataClient):

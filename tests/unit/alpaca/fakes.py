@@ -16,7 +16,7 @@ import requests
 from alpaca.common.exceptions import APIError
 from alpaca.data.models import BarSet
 from alpaca.data.requests import StockBarsRequest
-from alpaca.trading.models import Calendar
+from alpaca.trading.models import Calendar, Clock
 from alpaca.trading.requests import GetCalendarRequest
 
 FAKE_KEY = "PKTESTFAKEKEY000000"
@@ -110,25 +110,53 @@ def calendar_payload(
     return {"date": day.isoformat(), "open": open_hhmm, "close": close_hhmm}
 
 
+def clock_payload(
+    timestamp: str = "2026-10-03T10:00:00.123456789-04:00",
+    *,
+    is_open: bool = False,
+    next_open: str = "2026-10-05T09:30:00-04:00",
+    next_close: str = "2026-10-05T16:00:00-04:00",
+) -> dict[str, Any]:
+    """An API-shaped ``GET /v2/clock`` body (New York offsets, nanosecond timestamp)."""
+    return {
+        "timestamp": timestamp,
+        "is_open": is_open,
+        "next_open": next_open,
+        "next_close": next_close,
+    }
+
+
 class FakeCalendarClient:
-    """``CalendarClient`` double returning real ``Calendar`` models (inclusive range)."""
+    """``CalendarClient`` double returning real ``Calendar`` / ``Clock`` models (inclusive
+    range). ``failures`` are raised, in order, by the first calls of either method."""
 
     def __init__(
         self,
         days: Sequence[dict[str, str]],
         *,
         failures: Iterable[BaseException | None] = (),
+        clock: dict[str, Any] | None = None,
     ) -> None:
         self._days = list(days)
         self._failures = list(failures)
+        self._clock = clock if clock is not None else clock_payload()
         self.requests: list[GetCalendarRequest | None] = []
+        self.clock_calls = 0
 
-    def get_calendar(self, filters: GetCalendarRequest | None = None) -> Any:
-        self.requests.append(filters)
+    def _maybe_fail(self) -> None:
         if self._failures:
             failure = self._failures.pop(0)
             if failure is not None:
                 raise failure
+
+    def get_clock(self) -> Any:
+        self.clock_calls += 1
+        self._maybe_fail()
+        return Clock(**self._clock)
+
+    def get_calendar(self, filters: GetCalendarRequest | None = None) -> Any:
+        self.requests.append(filters)
+        self._maybe_fail()
         result = [Calendar(**dict(d)) for d in self._days]
         if filters is not None:
             result = [
