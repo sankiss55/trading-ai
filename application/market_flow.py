@@ -1,26 +1,37 @@
 """Market flow use cases: ``on_minute_bar`` and ``on_closed_bar`` (sec. 8.7, 10, 13).
 
-**Phase 1 subset.** This module wires the deterministic domain (aggregator, strategy,
-exit levels, sizing, risk limits) behind the use cases the backtest runs today. It
-submits **no** order: the caller (backtest runner now, execution guard in Phase 5)
-acts on the typed outcome. Phase 4 will insert the shared check library (sec. 19) and
-Phase 5 the execution guard (sec. 20) between :class:`EntryProposal` and submission;
-the only safety checks done here are the minimal ones a backtest cannot run without
-(entry window / flatten time of sec. 11.4, signal TTL of sec. 13.7, one entry per
-symbol at a time), and they will move to the check library.
+This module wires the deterministic domain (aggregator, strategy, exit levels, sizing)
+and the single check library (``domain.guards.checks``, sec. 19) behind the use cases.
+It submits **no** order: the caller (backtest runner now, Execution Guard in Phase 5,
+which re-runs the library with ``run_execution_checks``) acts on the typed outcome.
+No safety check is implemented here: every one is evaluated by ``run_pre_ai_checks``
+on a context assembled by :class:`application.risk_gate.RiskGate`.
 
-Flow per closed primary bar (sec. 13, 15.2, 16):
+Flow per closed primary bar (sec. 13, 15.2, 16, 19):
 
 1. Append the bar to the symbol's window (a bar not newer than the last one is a
    duplicate: ``NoAction(DUPLICATE_BAR)``, so a duplicated bar never yields two
    signals, AC-03).
 2. Symbol with a position (broker port): ``Strategy.evaluate_position`` ->
    :class:`Hold` or :class:`ExitRequest` (time stop / signal reversal).
-3. Symbol with a pending entry: ``NoAction(ENTRY_PENDING)``.
-4. Otherwise ``Strategy.evaluate_entry``; on ``BUY``: entry window and TTL ->
-   ``compute_exit_levels`` -> ``size_position`` -> ``build_proposed_trade`` ->
-   ``evaluate_limits``. Any failure -> :class:`Rejected` with the failing codes; all
-   pass -> :class:`EntryProposal`.
+3. Symbol with a pending entry recorded in the book
+   (``domain.guards.checks.entry_pending_in_book``): ``NoAction(ENTRY_PENDING)``.
+4. Otherwise ``Strategy.evaluate_entry``; on ``BUY``: the Risk Engine prices and sizes
+   the trade (``compute_exit_levels`` -> ``size_position`` -> ``build_proposed_trade``;
+   ``ATR_UNAVAILABLE`` without an ATR or close), then ``run_pre_ai_checks`` evaluates
+   EVERY sec. 19 check (symbol and asset, market clock, entry window, bar state, expiry,
+   data freshness, position, pending orders, duplicate signal, cooldown, price range,
+   liquidity, spread, exit levels, risk limits, buying power, circuit breaker, kill
+   switch, system mode, reconciliation, configuration). Any failed result ->
+   :class:`Rejected` with every failed code (pricing first, then the library in table
+   order) and every result; all pass -> :class:`EntryProposal`.
+
+Freshness (``DATA_FRESH``, sec. 10.6): the flow records the end of the last accepted
+1-minute bar of each symbol it ingests. Liquidity (``LIQUIDITY_OK``, sec. 12) reads the
+daily bars of ``universe.liquidity_feed`` from the gate, sessions before the decision
+session only. Without a gate (``gate=None``) nothing is configured or connected and
+every entry fails closed (``PARAM_PENDING`` / ``*_UNAVAILABLE`` codes); signals are
+still produced and returned inside :class:`Rejected` (observation mode).
 
 Daily primary timeframe (``1Day``, strategy family v2; ``holding_mode = swing`` and no
 confirmation timeframe, enforced by the config cross rules):
@@ -29,19 +40,21 @@ confirmation timeframe, enforced by the config cross rules):
   session with :func:`domain.market.session.session_bar`, straight to
   :meth:`MarketFlow.on_closed_bar` after the session close (``on_minute_bar`` refuses
   minute bars, ``on_clock`` closes nothing). Indicators and the ATR stop use daily bars.
-* Entry window: the decision is taken after the close and the entry is valid until the
-  NEXT session open. The signal expires at ``next session open + signal_ttl_seconds``
-  (instead of ``bar_end + signal_ttl_seconds``, sec. 13.7; declared in DECISIONS.md),
-  so the next session must be registered before deciding (``SESSION_UNKNOWN``
-  otherwise); a decision before the bar's close is ``OUTSIDE_ENTRY_WINDOW``. The
-  intraday window of sec. 11.4 (``no_entry_*``, flatten) does not apply.
+* Entry window (``domain.guards.checks.DailyTiming``): the decision is taken after the
+  close and the entry is valid until the NEXT session open. The signal expires at
+  ``next session open + signal_ttl_seconds`` (instead of ``bar_end +
+  signal_ttl_seconds``, sec. 13.7; declared in DECISIONS.md), so the next session must
+  be registered before deciding (``SESSION_UNKNOWN`` otherwise); a decision before the
+  bar's close is ``OUTSIDE_ENTRY_WINDOW`` (and ``BAR_NOT_CLOSED``). The intraday window
+  of sec. 11.4 (``no_entry_*``, flatten) does not apply.
 * Time stop and cooldown count daily bars (sessions). Exits are :class:`ExitRequest`
   as for intraday; the caller executes them at the next open.
 
-Time comes only from ``IClock``; account and positions only from ``IBroker`` (the
-broker is the source of truth). Values the live system will read from the database
-(week-start and peak equity, pending entries, recorded stops, entry/exit times) are
-passed in by the caller as a :class:`TradeBook` (Phase 2+: ``IUnitOfWork``).
+Time comes only from ``IClock``; account, positions and open orders only from ``IBroker``
+(the broker is the source of truth). Values the live system will read from the database
+(week-start and peak equity, pending entries, recorded stops, entry/exit times, executed
+signal ids) are passed in by the caller as a :class:`TradeBook` (Phase 2+:
+``IUnitOfWork``).
 """
 
 from __future__ import annotations
@@ -55,10 +68,25 @@ from typing import Annotated, Final, Literal
 
 from pydantic import Field
 
+from application.risk_gate import RiskGate
 from domain.errors import NonRetryableError, StateCriticalError
-from domain.market.aggregator import BarAggregator, IngestResult
+from domain.guards.checks import (
+    ENTRY_PENDING,
+    OUTSIDE_ENTRY_WINDOW,
+    SESSION_UNKNOWN,
+    SIGNAL_EXPIRED,
+    DailyTiming,
+    EntryTiming,
+    IntradayTiming,
+    entry_pending_in_book,
+    failed_codes,
+    run_pre_ai_checks,
+)
+from domain.market.aggregator import BarAggregator, IngestResult, IngestStatus
+from domain.market.quality import QualityCode
 from domain.market.session import SessionWindowParams, compute_session_windows
 from domain.models import (
+    AccountState,
     Bar,
     CheckResult,
     DataFeed,
@@ -88,8 +116,6 @@ from domain.risk.risk_engine import (
     PendingEntry,
     PositionStop,
     RiskParams,
-    RiskState,
-    evaluate_limits,
 )
 from domain.strategy.strategy import Strategy, StrategyDecision, count_bars_since
 
@@ -113,13 +139,15 @@ __all__ = [
     "TradeBook",
 ]
 
-DUPLICATE_BAR: Final = "DUPLICATE_BAR"
-ENTRY_PENDING: Final = "ENTRY_PENDING"
+DUPLICATE_BAR: Final = QualityCode.DUPLICATE_BAR.value
+"""A closed bar not newer than the window's last bar (sec. 10.4): no decision."""
 NO_SIGNAL: Final = "NO_SIGNAL"
-OUTSIDE_ENTRY_WINDOW: Final = "OUTSIDE_ENTRY_WINDOW"
-SESSION_UNKNOWN: Final = "SESSION_UNKNOWN"
-SIGNAL_EXPIRED: Final = "SIGNAL_EXPIRED"
 ATR_UNAVAILABLE: Final = "ATR_UNAVAILABLE"
+"""Risk Engine pricing input missing (no ATR or no close): the trade cannot be priced."""
+# ENTRY_PENDING, OUTSIDE_ENTRY_WINDOW, SESSION_UNKNOWN and SIGNAL_EXPIRED are codes of the
+# check library (domain.guards.checks), re-exported here for the flow's callers.
+
+_FRESHNESS_STATUSES: Final = frozenset({IngestStatus.ACCEPTED, IngestStatus.LATE_BAR})
 
 
 # --------------------------------------------------------------------------- inputs
@@ -159,6 +187,9 @@ class TradeBook(DomainModel):
         position_stops: Recorded stop of each open position.
         entry_fills: Entry fill time of each open position, per symbol.
         last_exits: Time of the last exit fill per symbol (cooldown).
+        executed_signal_ids: Signal ids that already produced an entry submission
+            (sec. 22, ``NOT_DUPLICATE_SIGNAL``). ``None`` = unknown: every entry fails
+            closed with ``SIGNAL_HISTORY_UNAVAILABLE``.
     """
 
     week_start_equity: Money
@@ -167,6 +198,7 @@ class TradeBook(DomainModel):
     position_stops: tuple[PositionStop, ...]
     entry_fills: Mapping[Symbol, UtcDatetime]
     last_exits: Mapping[Symbol, UtcDatetime]
+    executed_signal_ids: frozenset[str] | None = None
 
 
 # --------------------------------------------------------------------------- outcomes
@@ -210,7 +242,11 @@ class ExitRequest(DomainModel):
 
 
 class Rejected(DomainModel):
-    """A ``BUY`` signal that did not survive pricing, sizing, limits or session checks."""
+    """A ``BUY`` signal that failed pricing/sizing or any check of the library (sec. 19).
+
+    ``codes`` are every failed code (pricing first, then the library in table order,
+    without repetitions); ``checks`` every result, passed or failed (``risk_events``).
+    """
 
     kind: Literal["REJECTED"] = "REJECTED"
     symbol: Symbol
@@ -221,10 +257,11 @@ class Rejected(DomainModel):
 
 
 class EntryProposal(DomainModel):
-    """A priced, sized entry that passed every Phase 1 check (not submitted).
+    """A priced, sized entry that passed every pre-AI check of sec. 19 (not submitted).
 
     ``limit_price`` is set only for limit entries (it equals ``trade.entry_ref``).
-    ``checks`` holds the exit-level, sizing and limit results (``risk_events``).
+    ``checks`` holds the exit-level and sizing results followed by every check-library
+    result (``risk_events``).
     """
 
     kind: Literal["ENTRY"] = "ENTRY"
@@ -257,7 +294,9 @@ class MarketFlow:
         risk_params: Risk parameters (sec. 15).
         params: Technical flow parameters.
         clock: Time source.
-        broker: Broker port (account and positions).
+        broker: Broker port (account, positions and open orders).
+        gate: Assembles the check-library context (settings, runtime facts, liquidity
+            and quote sources). ``None``: nothing configured, every entry fails closed.
     """
 
     def __init__(
@@ -269,6 +308,7 @@ class MarketFlow:
         params: MarketFlowParams,
         clock: IClock,
         broker: IBroker,
+        gate: RiskGate | None = None,
     ) -> None:
         strategy_params = strategy.params
         primary = strategy_params.primary_timeframe
@@ -280,6 +320,14 @@ class MarketFlow:
         self._params = params
         self._clock = clock
         self._broker = broker
+        self._gate = gate if gate is not None else RiskGate.unconfigured()
+        self._check_params = self._gate.check_params(
+            risk=risk_params,
+            min_tp_distance_ticks=exit_params.min_tp_distance_ticks,
+            cooldown_bars=strategy_params.cooldown_bars,
+            min_minutes_per_bar=strategy_params.min_minutes_per_bar,
+        )
+        self._last_minute_end: dict[str, datetime] = {}
         self._primary = primary
         self._confirmation = strategy_params.confirmation_timeframe
         self._daily = primary is Timeframe.DAY_1
@@ -396,12 +444,26 @@ class MarketFlow:
                 code="UNSUPPORTED_TIMEFRAME",
             )
         ingest = primary_agg.ingest(bar)
+        self._note_minute(bar, ingest.status)
         closed = list(ingest.closed_bars)
         if self._confirm_agg is not None:
             self._store_confirmation(self._confirm_agg.ingest(bar).closed_bars)
         closed.extend(self.on_clock())
         closed.sort(key=lambda b: (b.bar_start_utc, b.symbol))
         return MinuteBarResult(ingest=ingest, closed_bars=tuple(closed))
+
+    def _note_minute(self, bar: Bar, status: IngestStatus) -> None:
+        """Record the end of the last 1-minute bar received for freshness (sec. 10.6).
+
+        Only bars the aggregator took (accepted or late) and that already ended count;
+        a duplicate, an out-of-session or rejected bar, or a bar from the future does not
+        make the symbol fresher.
+        """
+        if status not in _FRESHNESS_STATUSES or bar.bar_end_utc > self._clock.now_utc():
+            return
+        previous = self._last_minute_end.get(bar.symbol)
+        if previous is None or bar.bar_end_utc > previous:
+            self._last_minute_end[bar.symbol] = bar.bar_end_utc
 
     def on_clock(self) -> tuple[Bar, ...]:
         """Close buckets by time at ``clock.now_utc()`` (call on every clock step).
@@ -497,20 +559,23 @@ class MarketFlow:
                 return ExitRequest(symbol=symbol, reason=decision.exit_reason, decision=decision)
             return Hold(symbol=symbol, decision=decision)
 
-        if any(entry.symbol == symbol for entry in book.pending_entries):
+        if entry_pending_in_book(symbol, book.pending_entries):
             return NoAction(symbol=symbol, reason=ENTRY_PENDING, decision=None)
 
         last_exit = book.last_exits.get(symbol)
+        since_exit = None if last_exit is None else count_bars_since(window, last_exit)
         now = self._clock.now_utc()
         decision = self._strategy.evaluate_entry(
             context,
-            bars_since_last_exit=None if last_exit is None else count_bars_since(window, last_exit),
+            bars_since_last_exit=since_exit,
             created_at_utc=now,
             expires_at_utc=self._daily_expiry(bar) if self._daily else None,
         )
         if decision.action is not StrategyAction.BUY or decision.signal is None:
             return NoAction(symbol=symbol, reason=NO_SIGNAL, decision=decision)
-        return await self._price_entry(bar, decision, decision.signal, context.latest_atr(), book)
+        return await self._assess_entry(
+            bar, decision, decision.signal, context.latest_atr(), book, since_exit
+        )
 
     def _daily_expiry(self, bar: Bar) -> datetime | None:
         """Daily signal expiry: next session open + TTL (``None`` if not registered)."""
@@ -524,56 +589,42 @@ class MarketFlow:
         first = bisect_right(self._session_closes, since)
         return tuple(self._sessions[max(first - 1, 0) :])
 
-    async def _price_entry(
-        self,
-        bar: Bar,
-        decision: StrategyDecision,
-        signal: Signal,
-        atr: Decimal | None,
-        book: TradeBook,
-    ) -> BarOutcome:
-        symbol = bar.symbol
-        now = self._clock.now_utc()
-
-        def rejected(codes: tuple[str, ...], checks: tuple[CheckResult, ...] = ()) -> Rejected:
-            return Rejected(
-                symbol=symbol, codes=codes, signal=signal, decision=decision, checks=checks
-            )
-
+    def _timing(self, bar: Bar) -> EntryTiming:
+        """Entry timing of the signal bar: daily next-open or intraday session windows."""
         session = self.session_of(bar.bar_start_utc)
-        if session is None:
-            return rejected((SESSION_UNKNOWN,))
         if self._daily:
-            # Decided after the close; valid until the next session open (+ TTL).
-            if self._session_after(bar.bar_start_utc) is None:
-                return rejected((SESSION_UNKNOWN,))
-            if now < bar.bar_end_utc:
-                return rejected((OUTSIDE_ENTRY_WINDOW,))
-        else:
-            windows = compute_session_windows(session, self._params.session)
-            if not windows.is_entry_window(now) or windows.is_flatten_time(now):
-                return rejected((OUTSIDE_ENTRY_WINDOW,))
-        if now > signal.expires_at_utc:
-            return rejected((SIGNAL_EXPIRED,))
-        if atr is None or bar.close is None:
-            return rejected((ATR_UNAVAILABLE,))
+            return DailyTiming(
+                signal_session=session, next_session=self._session_after(bar.bar_start_utc)
+            )
+        windows = (
+            None if session is None else compute_session_windows(session, self._params.session)
+        )
+        return IntradayTiming(
+            windows=windows, last_minute_bar_end_utc=self._last_minute_end.get(bar.symbol)
+        )
 
+    def _price(
+        self, bar: Bar, signal: Signal, atr: Decimal | None, account: AccountState
+    ) -> tuple[
+        tuple[CheckResult, ...], ExitLevelsResult | None, ProposedTrade | None, Decimal | None
+    ]:
+        """Risk Engine pricing and sizing (sec. 15.2, 16): results, levels, trade, limit."""
+        if atr is None or bar.close is None:
+            missing = CheckResult(
+                passed=False,
+                code=ATR_UNAVAILABLE,
+                detail={"stage": "pricing", "atr": atr, "close": bar.close},
+            )
+            return (missing,), None, None, None
         limit_price: Decimal | None = None
         entry_ref = bar.close
         offset = self._params.limit_entry_offset_bps
         if offset is not None:
             limit_price = round_down_to_increment(bar.close * (1 + offset / BPS_PER_UNIT))
             entry_ref = limit_price
-
         levels = compute_exit_levels(entry_ref, atr, self._exit_params)
-        if (
-            not levels.check.passed
-            or levels.stop_price is None
-            or (levels.take_profit_price is None)
-        ):
-            return rejected((levels.check.code,), (levels.check,))
-
-        account = await self._broker.get_account()
+        if not levels.check.passed or levels.stop_price is None or levels.take_profit_price is None:
+            return (levels.check,), levels, None, limit_price
         sizing = size_position(
             entry_ref=entry_ref,
             stop_price=levels.stop_price,
@@ -582,27 +633,49 @@ class MarketFlow:
             params=self._risk_params,
         )
         if not sizing.check.passed:
-            return rejected((sizing.check.code,), (levels.check, sizing.check))
+            return (levels.check, sizing.check), levels, None, limit_price
         trade = build_proposed_trade(
             sizing,
             signal_id=signal.signal_id,
-            symbol=symbol,
+            symbol=bar.symbol,
             take_profit_price=levels.take_profit_price,
         )
-        state = RiskState(
-            equity=account.equity,
-            last_equity=account.last_equity,
-            week_start_equity=book.week_start_equity,
-            peak_equity=book.peak_equity,
-            open_positions=tuple(await self._broker.get_positions()),
+        return (levels.check, sizing.check), levels, trade, limit_price
+
+    async def _assess_entry(
+        self,
+        bar: Bar,
+        decision: StrategyDecision,
+        signal: Signal,
+        atr: Decimal | None,
+        book: TradeBook,
+        bars_since_last_exit: int | None,
+    ) -> BarOutcome:
+        """Price the signal and run every pre-AI check of the library (sec. 17.1, 19)."""
+        symbol = bar.symbol
+        broker = await self._gate.broker_state(self._broker)
+        pricing, levels, trade, limit_price = self._price(bar, signal, atr, broker.account)
+        context = await self._gate.context(
+            now_utc=self._clock.now_utc(),
+            signal=signal,
+            signal_bar=bar,
+            bars_since_last_exit=bars_since_last_exit,
+            trade=trade,
+            params=self._check_params,
+            timing=self._timing(bar),
+            broker=broker,
             pending_entries=book.pending_entries,
             position_stops=book.position_stops,
+            week_start_equity=book.week_start_equity,
+            peak_equity=book.peak_equity,
+            executed_signal_ids=book.executed_signal_ids,
         )
-        limits = evaluate_limits(self._risk_params, state, trade)
-        checks = (levels.check, sizing.check, *limits)
-        failed = tuple(dict.fromkeys(c.code for c in limits if not c.passed))
-        if failed:
-            return rejected(failed, checks)
+        checks = (*pricing, *run_pre_ai_checks(context))
+        codes = failed_codes(checks)
+        if codes or trade is None or levels is None:
+            return Rejected(
+                symbol=symbol, codes=codes, signal=signal, decision=decision, checks=checks
+            )
         return EntryProposal(
             symbol=symbol,
             trade=trade,

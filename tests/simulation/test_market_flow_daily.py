@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from adapters.simulation import SimClock, SimulatedBroker
+from adapters.simulation import HistoricalFeed, SimClock, SimulatedBroker
 from app.config import AppConfig, exit_params, risk_params, session_window_params
 from application.market_flow import (
     OUTSIDE_ENTRY_WINDOW,
@@ -19,7 +19,9 @@ from application.market_flow import (
     Rejected,
     TradeBook,
 )
+from backtest.runner import simulation_gate
 from domain.errors import NonRetryableError
+from domain.guards.checks import BAR_NOT_CLOSED
 from domain.market.session import session_bar
 from domain.models import Bar, DataFeed, SessionDay, Timeframe
 from domain.strategy.signals import signal_id_for
@@ -58,6 +60,7 @@ def _book() -> TradeBook:
         position_stops=(),
         entry_fills={},
         last_exits={},
+        executed_signal_ids=frozenset(),
     )
 
 
@@ -82,6 +85,14 @@ class DailyHarness:
             ),
             clock=self.clock,
             broker=self.broker,
+            gate=simulation_gate(
+                self.config,
+                sessions=SESSIONS,
+                clock=self.clock,
+                liquidity_data=HistoricalFeed(
+                    daily_bar("AAA", day, ohlc) for day, ohlc in zip(DAYS, _series(), strict=True)
+                ),
+            ),
         )
 
     def warm_up(self, until: int) -> None:
@@ -143,7 +154,8 @@ async def test_daily_decision_before_the_close_is_outside_the_entry_window() -> 
         _stamped(SIGNAL_DAY, _series()[SIGNAL_DAY]), book=_book()
     )
     assert isinstance(outcome, Rejected)
-    assert outcome.codes == (OUTSIDE_ENTRY_WINDOW,)
+    # Every check runs (sec. 19): the bar is also not closed yet.
+    assert outcome.codes == (OUTSIDE_ENTRY_WINDOW, BAR_NOT_CLOSED)
 
 
 async def test_daily_signal_expired_after_the_next_open() -> None:

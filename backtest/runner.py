@@ -2,9 +2,21 @@
 
 Wiring (sec. 8.6): ``SimClock`` + ``StaticCalendar`` (stored calendar) +
 ``HistoricalFeed`` (stored bars) + ``SimulatedBroker`` (stop-first brackets, slippage)
-+ :class:`application.market_flow.MarketFlow`. No indicator, rule, sizing, SL/TP or
-fill logic is implemented here (sec. 45.2.1): the runner only moves time, routes bars,
++ :class:`application.market_flow.MarketFlow`. No indicator, rule, sizing, SL/TP, check
+or fill logic is implemented here (sec. 45.2.1): the runner only moves time, routes bars,
 submits the orders the flow proposes and records fills.
+
+Check library (sec. 19, Phase 4): every entry passes ``run_pre_ai_checks`` through the
+flow's :class:`application.risk_gate.RiskGate`, built by :func:`guard_settings` (config
+``universe.*``, ``market_data.max_bar_age_seconds``) with the stored daily bars of the
+dataset as the liquidity source (``HistoricalFeed.get_daily_bars``, sessions before the
+decision session only) and :class:`SimulationGuardEnvironment` as the runtime state: the
+simulated controls are fixed (trading enabled, no STOP file, no emergency close, AI
+``DISABLED``, breaker ``NORMAL``, system ``RUNNING``, reconciled at every decision, every
+whitelisted asset tradable, feed connected) and the market clock is the stored calendar.
+The spread filter is ``NOT_APPLIED``: the dataset has no historical quotes (sec. 10.5).
+The circuit breaker itself (sec. 30) is not simulated: loss limits act per signal
+through ``RISK_LIMITS_OK`` as before; the breaker and the Execution Guard are Phase 5.
 
 Loop per session (all decisions use data up to the bar being decided, sec. 45.2.8):
 
@@ -79,6 +91,7 @@ import calendar as _calendar
 import hashlib
 import math
 import os
+from bisect import bisect_right
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
@@ -106,6 +119,7 @@ from application.market_flow import (
     Rejected,
     TradeBook,
 )
+from application.risk_gate import GuardSettings, RiskGate
 from backtest.data import BacktestData, load_backtest_data
 from backtest.report import (
     DISCLAIMER,
@@ -120,6 +134,7 @@ from backtest.report import (
     continuation_check,
 )
 from domain.errors import NonRetryableError
+from domain.guards.checks import ControlFacts, ReconciliationFacts, RuntimeFacts, SpreadFilter
 from domain.market.session import (
     SessionWindows,
     compute_session_windows,
@@ -127,8 +142,10 @@ from domain.market.session import (
     session_bar,
 )
 from domain.models import (
+    AIMode,
     Bar,
     BracketOrderRequest,
+    CircuitBreakerState,
     DataFeed,
     ExitReason,
     HoldingMode,
@@ -136,10 +153,12 @@ from domain.models import (
     OrderType,
     SessionDay,
     SimpleOrderRequest,
+    SystemMode,
     Timeframe,
     TimeInForce,
     TradeUpdateEvent,
 )
+from domain.ports import IClock, IMarketData
 from domain.risk.risk_engine import PendingEntry, PositionStop
 from domain.strategy.strategy import Strategy
 
@@ -147,15 +166,18 @@ __all__ = [
     "CLIENT_ORDER_PREFIX",
     "SLIPPAGE_MULTIPLIERS",
     "BacktestRefusedError",
+    "SimulationGuardEnvironment",
     "SimulationJob",
     "SimulationResult",
     "add_months",
     "data_fingerprint",
     "default_workers",
+    "guard_settings",
     "run_backtest",
     "run_backtest_async",
     "run_simulations",
     "simulate",
+    "simulation_gate",
     "walk_forward_windows",
 ]
 
@@ -178,6 +200,108 @@ class BacktestRefusedError(NonRetryableError):
             f"(set them in config.yaml, no default is assumed): {', '.join(self.pending)}",
             code="OWNER_DECISION_PENDING",
         )
+
+
+# --------------------------------------------------------------------------- check library
+
+
+def guard_settings(config: AppConfig, *, spread_filter: SpreadFilter) -> GuardSettings:
+    """Check-library settings of ``config`` (``universe.*``, freshness, reconciliation)."""
+    universe = config.universe
+    return GuardSettings(
+        whitelist=universe.whitelist,
+        blacklist=universe.blacklist,
+        min_price=universe.min_price,
+        max_price=universe.max_price,
+        min_avg_daily_volume=universe.min_avg_daily_volume,
+        avg_volume_lookback_days=universe.avg_volume_lookback_days,
+        liquidity_feed=universe.liquidity_feed,
+        max_spread_bps=universe.max_spread_bps,
+        spread_filter=spread_filter,
+        max_bar_age_seconds=config.market_data.max_bar_age_seconds,
+        max_reconcile_age_seconds=config.execution.reconcile_interval_seconds,
+    )
+
+
+class SimulationGuardEnvironment:
+    """Runtime facts of a simulation (``application.risk_gate.GuardEnvironment``).
+
+    The simulated controls never change: trading enabled, no STOP file, no emergency
+    close, AI ``DISABLED``, breaker ``NORMAL``, system ``RUNNING``, reconciled at every
+    decision (the simulated broker is the book), every ``tradable`` symbol tradable and the
+    feed connected. ``market_open`` comes from the stored calendar at the clock time.
+
+    Args:
+        sessions: Stored calendar sessions, in order.
+        clock: Simulation clock.
+        tradable: Symbols the simulated Asset API reports tradable.
+        pending_decisions: Required OWNER_DECISIONs still ``null`` for this run.
+    """
+
+    def __init__(
+        self,
+        *,
+        sessions: Sequence[SessionDay],
+        clock: IClock,
+        tradable: Sequence[str],
+        pending_decisions: Sequence[str],
+    ) -> None:
+        self._sessions = tuple(sessions)
+        self._opens = [session.open_utc for session in self._sessions]
+        self._clock = clock
+        self._tradable = frozenset(tradable)
+        self._pending = tuple(pending_decisions)
+        self._control = ControlFacts(
+            trading_enabled=True,
+            emergency_close=False,
+            stop_file_present=False,
+            ai_mode=AIMode.DISABLED,
+        )
+
+    def _market_open(self, now: datetime) -> bool:
+        index = bisect_right(self._opens, now) - 1
+        return index >= 0 and now < self._sessions[index].close_utc
+
+    async def runtime_facts(self) -> RuntimeFacts:
+        """The fixed simulated facts at the clock time."""
+        now = self._clock.now_utc()
+        return RuntimeFacts(
+            control=self._control,
+            breaker_state=CircuitBreakerState.NORMAL,
+            system_mode=SystemMode.RUNNING,
+            reconciliation=ReconciliationFacts(last_clean_at_utc=now, unresolved_mismatch=False),
+            pending_owner_decisions=self._pending,
+            tradable_symbols=self._tradable,
+            market_open=self._market_open(now),
+            feed_connected=True,
+        )
+
+
+def simulation_gate(
+    config: AppConfig,
+    *,
+    sessions: Sequence[SessionDay],
+    clock: IClock,
+    liquidity_data: IMarketData,
+) -> RiskGate:
+    """The check-library gate of a simulation (backtest runner and parity live path).
+
+    Settings from ``config`` with the spread filter ``NOT_APPLIED`` (no historical
+    quotes), :class:`SimulationGuardEnvironment` over the stored ``sessions`` with every
+    whitelisted symbol tradable, and ``liquidity_data`` as the daily-bar source of the
+    liquidity filter.
+    """
+    return RiskGate(
+        settings=guard_settings(config, spread_filter=SpreadFilter.NOT_APPLIED),
+        environment=SimulationGuardEnvironment(
+            sessions=sessions,
+            clock=clock,
+            tradable=tuple(config.universe.whitelist or ()),
+            pending_decisions=pending_backtest_decisions(config),
+        ),
+        liquidity_data=liquidity_data,
+        quote_data=None,
+    )
 
 
 # --------------------------------------------------------------------------- results
@@ -325,6 +449,9 @@ class _Simulator:
             ),
             clock=self._clock,
             broker=self._broker,
+            gate=simulation_gate(
+                config, sessions=data.sessions, clock=self._clock, liquidity_data=data.feed
+            ),
         )
         if primary.minutes is None:  # 1Day: one bar per session
             warmup_count = self._flow.window_size
@@ -345,6 +472,7 @@ class _Simulator:
         self._closed: list[TradeRecord] = []
         self._deferred: dict[str, ExitReason] = {}
         self._last_exits: dict[str, datetime] = {}
+        self._executed: frozenset[str] = frozenset()
         self._curve: list[EquityPoint] = []
         self._counters = _Counters()
         self._peak_equity = starting_cash
@@ -557,6 +685,7 @@ class _Simulator:
             ),
             entry_fills={t.symbol: t.entry_filled_at for t in filled if t.entry_filled_at},
             last_exits=dict(self._last_exits),
+            executed_signal_ids=self._executed,
         )
 
     async def _decide(self, closed: Sequence[Bar]) -> None:
@@ -595,6 +724,7 @@ class _Simulator:
             self._counters.broker_rejections[exc.code or "UNKNOWN"] += 1
             self._drain()
             return
+        self._executed = self._executed | {trade.signal_id}
         if order.order_id in self._by_order:  # idempotent re-submission (sec. 22)
             return
         record = _OpenTrade(
@@ -1054,8 +1184,10 @@ async def run_backtest_async(
         "Slippage sensitivity scales only the simulated fills (x"
         + ", x".join(map(str, SLIPPAGE_MULTIPLIERS))
         + "); sizing keeps risk.slippage_buffer_bps.",
-        "Phase 1 runner: the shared check library (Phase 4) and the execution guard / "
-        "state machine (Phase 5) are not wired yet (AC-22 pending).",
+        "Check library (sec. 19) applied before every entry with fixed simulated controls "
+        "(trading enabled, breaker NORMAL, system RUNNING); spread filter not applied (no "
+        "historical quotes). Circuit breaker, execution guard and state machine (Phase 5) "
+        "are not wired yet (AC-22 pending).",
     )
     return BacktestReport(
         disclaimer=DISCLAIMER,

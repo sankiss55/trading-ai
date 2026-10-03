@@ -6,6 +6,7 @@ not owner decisions) and every price from the seeded synthetic generator.
 
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,12 @@ DRIFT_BPS = 0.2
 
 
 def make_dataset(directory: Path, *, end: date, seed: int = SEED, start: date = DATA_START) -> Path:
-    """Write the standard synthetic dataset into ``directory`` and return it."""
+    """Write the standard synthetic dataset into ``directory`` and return it.
+
+    Like a downloaded dataset, it carries a ``manifest.json`` with the per-timeframe
+    feeds of the fixture config (minute bars ``iex``, daily bars of the liquidity filter
+    ``sip``, owner decision group 18), so the loader tags each bar with its feed.
+    """
     generate_synthetic_data(
         directory,
         SyntheticSpec(
@@ -36,6 +42,8 @@ def make_dataset(directory: Path, *, end: date, seed: int = SEED, start: date = 
             drift_bps_per_minute=DRIFT_BPS,
         ),
     )
+    manifest = {"version": 2, "feeds": {"1Min": "iex", "1Day": "sip"}}
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return directory
 
 

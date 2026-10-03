@@ -27,7 +27,7 @@ universe:
   max_price: 10000
   min_avg_daily_volume: 1000
   liquidity_feed: "sip"
-  avg_volume_lookback_days: 20
+  avg_volume_lookback_days: 10     # the synthetic datasets store 12 sessions before 2025-01-02
   max_spread_bps: 50
 
 market_data:

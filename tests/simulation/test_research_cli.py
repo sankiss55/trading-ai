@@ -50,6 +50,8 @@ CONFIG_CHANGES = (
     ("out_of_sample_start: 2017-11-01", "out_of_sample_start: 2024-05-01"),
     ("walk_forward_train_months: 12", "walk_forward_train_months: 2"),
     ("walk_forward_test_months: 3", "walk_forward_test_months: 1"),
+    # Liquidity filter (check library, sec. 12): synthetic volumes are 0.5-2M shares/day.
+    ("min_avg_daily_volume: 5000000", "min_avg_daily_volume: 100000"),
 )
 
 

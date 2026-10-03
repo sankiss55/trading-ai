@@ -26,6 +26,7 @@ from application.market_flow import (
     TradeBook,
 )
 from backtest.data import BacktestData, load_backtest_data
+from backtest.runner import simulation_gate
 from domain.errors import StateCriticalError
 from domain.market.aggregator import IngestStatus
 from domain.market.session import compute_session_windows
@@ -81,6 +82,9 @@ class Harness:
             ),
             clock=self.clock,
             broker=self.broker,
+            gate=simulation_gate(
+                config, sessions=data.sessions, clock=self.clock, liquidity_data=data.feed
+            ),
         )
 
     async def minutes(self, session: SessionDay) -> list[Bar]:
@@ -117,6 +121,7 @@ def empty_book() -> TradeBook:
         position_stops=(),
         entry_fills={},
         last_exits={},
+        executed_signal_ids=frozenset(),
     )
 
 

@@ -28,6 +28,7 @@ from application.health import (
     CHECK_STOP_FILE,
     HealthReport,
 )
+from domain.guards.checks import ControlFacts, kill_switch_reasons
 from domain.models import AIMode, CircuitBreakerState, SystemControl
 from domain.models.base import DomainModel
 
@@ -105,15 +106,19 @@ def emergency_close_requested(control: SystemControl) -> bool:
 
 
 def trading_block_reasons(control: SystemControl, *, stop_file_present: bool) -> tuple[str, ...]:
-    """Why new entries are blocked by the runtime controls (empty: not blocked by them)."""
-    reasons: list[str] = []
-    if stop_file_present:
-        reasons.append(RefusalCode.STOP_FILE_PRESENT.value)
-    if control.emergency_close:
-        reasons.append(RefusalCode.EMERGENCY_CLOSE_ACTIVE.value)
-    if not control.trading_enabled:
-        reasons.append("TRADING_DISABLED")
-    return tuple(reasons)
+    """Why new entries are blocked by the runtime controls (empty: not blocked by them).
+
+    Delegates to :func:`domain.guards.checks.kill_switch_reasons`, the single
+    implementation of the kill switch also evaluated by ``TRADING_ENABLED`` (sec. 19).
+    """
+    return kill_switch_reasons(
+        ControlFacts(
+            trading_enabled=control.trading_enabled,
+            emergency_close=control.emergency_close,
+            stop_file_present=stop_file_present,
+            ai_mode=control.ai_mode,
+        )
+    )
 
 
 def effective_trading_enabled(control: SystemControl, *, stop_file_present: bool) -> bool:

@@ -195,3 +195,68 @@ CTL set-ai-mode ACTIVE --reason "why"     # always refused for now
 ## Model change
 
 TBD (Phase 8)
+
+## Daily data cycle
+
+Phase 3 scope: live market data for **daily** strategies only (`strategy.primary_timeframe
+= 1Day`, strategy family v2). There is no websocket minute stream yet (intraday streaming is
+future work: strategy v1 intraday was rejected). Nothing is submitted: execution is Phase 5.
+
+How it works (`application/daily_cycle.py`, `DailyDataCycle`):
+
+1. **Warm-up at process start** (`warm_up(first_session)`): the `N` sessions before the
+   first session to decide (`N` = the strategy window, at least
+   `market_data.history_warmup_bars`) are read from the market calendar and their daily
+   bars from `IMarketData.get_daily_bars`, and recorded as history with no decision, the
+   same way the backtest warms up. A session without a bar is recorded as an EMPTY bar.
+2. **Once per session, after the close** (`run_session_close(session, book=...)`): the
+   cycle refuses to decide before `close + data delay` (default 20 minutes; the Alpaca free
+   plan serves SIP history only when it is at least 15 minutes old). Then, for every
+   whitelisted symbol in sorted order, it fetches that session's daily bar, checks it
+   (exactly one `COMPLETE` bar for the session date, strategy feed, sane OHLC, label inside
+   the session), stamps it to the session and passes it to `MarketFlow.on_closed_bar`. The
+   `CycleReport` lists, per symbol, the bar, the outcome kind, the strategy action, the
+   signal id, the rule results and the reasons.
+3. **Gaps** (process down): sessions between the last processed session and the session
+   being decided are refilled from the historical API before deciding; only the latest
+   closed session is decided (an older one is refused with `NOT_LATEST_SESSION`).
+
+Fail closed (sec. 10.6): a symbol whose bar is `STALE`, `MISSING`, `INCOMPLETE`,
+`FEED_MISMATCH`, `INVALID`, `FETCH_FAILED` or `BACKFILL_FAILED` gets **no decision** for
+that session (no new trade); the reason is in the report and the other symbols are decided.
+A missing or invalid decision bar is not recorded: the next cycle refills it (or records an
+EMPTY bar if it is still missing), so a late bar is picked up. A calendar that cannot be
+read refuses the whole cycle (`CALENDAR_UNAVAILABLE`). On the last session the calendar
+knows, entries are rejected (`SESSION_UNKNOWN`: the signal expiry needs the next open).
+
+Market calendar: the warm-up scans the calendar day by day; prefetch the range with
+`AlpacaCalendar.get_sessions` first so it costs one request.
+
+### Signal parity check (Phase 3 exit, sec. 55)
+
+```text
+python -m backtest.parity --config research/configs/mr_a1_ibs.yaml --data data/alpaca_sip_daily_split
+python -m backtest.parity --config research/configs/mr_a1_ibs.yaml --data data/alpaca_sip_daily_split --live
+```
+
+Options: `--sessions K` (default 20), `--data-delay-minutes M` (default 20),
+`--starting-cash X` (default 100000; parity does not depend on it), `--json FILE`,
+`--env-file .env` (for `--live`).
+
+The last `K` stored sessions that have a stored next session are decided twice: by the
+backtest runner and by the daily cycle from a fresh warm-up, one session at a time at
+`close + delay`. The live path submits nothing; its broker replays the backtest's
+positions, account and trade book at each decision, so only the data path differs. Every
+bar, the indicator window after each decision, the outcome kind, action, signal id and
+expiry, rule results, reasons and priced trades must be identical. `--live` reads the bars
+from the real Alpaca market data (read-only, feed and adjustment from the config) and also
+compares the Alpaca calendar with the stored one.
+
+Exit codes: `0` full parity, `1` mismatches (listed with session, symbol and field), `2`
+refused (pending owner decisions, not a `1Day` strategy, dataset adjustment different from
+`market_data.adjustment`, live data unavailable).
+
+If parity fails: a `bar` or `window` mismatch on `--live` means the provider's history
+differs from the stored dataset (revised data, different adjustment or feed): re-download
+the dataset and rerun before trusting either side. A `status` mismatch means the live path
+refused a bar the backtest used (for example a session with no bar in the dataset).
