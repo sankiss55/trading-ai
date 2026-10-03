@@ -267,6 +267,7 @@ process: `subprocess`, `asyncio.subprocess`, `os.system` and similar are forbidd
 
 | Date | Phase | Approver | Notes |
 | --- | --- | --- | --- |
+| 2026-10-03 | 2. Infraestructura base | Owner | Exit evidence: `python -m app.main --once` on Alpaca paper reached READY with trading disabled (account ACTIVE, 0 positions, 0 orders, reconciliation OK, health OK) = AC-01; AC-20 covered by tests; full suite 1606 passed. Phase 1 exit criterion was NOT met (no validated strategy); owner decided 2026-10-02 to build the paper system anyway |
 
 ## Technical decisions pending owner confirmation
 
