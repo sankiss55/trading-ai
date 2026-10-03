@@ -20,6 +20,7 @@ from tests.unit.alpaca.fakes import (
     SleepRecorder,
     api_error,
     calendar_payload,
+    clock_payload,
 )
 
 DAYS = [
@@ -111,9 +112,47 @@ def test_inconsistent_calendar_day_is_rejected() -> None:
     assert info.value.code == "INVALID_CALENDAR"
 
 
-async def test_clock_is_phase_2() -> None:
-    with pytest.raises(NotImplementedError, match="Phase 2"):
-        await _calendar(FakeCalendarClient(DAYS)).get_clock()
+async def test_clock_is_converted_to_utc() -> None:
+    clock = await _calendar(FakeCalendarClient(DAYS, clock=clock_payload())).get_clock()
+    assert clock.is_open is False
+    assert clock.now_utc == datetime(2026, 10, 3, 14, 0, 0, 123456, tzinfo=UTC)
+    assert clock.next_open_utc == datetime(2026, 10, 5, 13, 30, tzinfo=UTC)
+    assert clock.next_close_utc == datetime(2026, 10, 5, 20, 0, tzinfo=UTC)
+
+
+async def test_open_market_clock() -> None:
+    payload = clock_payload(
+        "2026-03-09T10:00:00-04:00",
+        is_open=True,
+        next_open="2026-03-10T09:30:00-04:00",
+        next_close="2026-03-09T16:00:00-04:00",
+    )
+    clock = await _calendar(FakeCalendarClient(DAYS, clock=payload)).get_clock()
+    assert clock.is_open is True
+    assert clock.next_close_utc == datetime(2026, 3, 9, 20, 0, tzinfo=UTC)
+
+
+async def test_clock_is_never_cached() -> None:
+    client = FakeCalendarClient(DAYS)
+    calendar = _calendar(client)
+    await calendar.get_clock()
+    await calendar.get_clock()
+    assert client.clock_calls == 2
+
+
+async def test_clock_retries_rate_limit() -> None:
+    sleep = SleepRecorder()
+    client = FakeCalendarClient(DAYS, failures=[api_error(429)])
+    await _calendar(client, sleep).get_clock()
+    assert sleep.delays == [1.0]
+    assert client.clock_calls == 2
+
+
+async def test_naive_clock_timestamp_is_rejected() -> None:
+    client = FakeCalendarClient(DAYS, clock=clock_payload("2026-10-03T10:00:00"))
+    with pytest.raises(NonRetryableError) as info:
+        await _calendar(client).get_clock()
+    assert info.value.code == "INVALID_CLOCK"
 
 
 def test_from_credentials_forces_paper_trading_client() -> None:
